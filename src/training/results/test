@@ -1,0 +1,12 @@
+ ------- Running training for model: test with config: test -------- 
+
+Params: batch size: 8; number of epochs: 3; frozen weights: True; pretrained embeddings: True
+Model params: hidden size: 6144; lr: 4.5e-05; merge strategy: EmbeddingsCombineStrategy()
+training > epoch: 1; loss: 0.6892654035070332; accuracy: 0.6181885125184094; 
+validation > epoch: 1; loss: 0.7538418462499976; accuracy: 0.6203125; 
+training > epoch: 2; loss: 0.5671686137942749; accuracy: 0.710419734904271; 
+validation > epoch: 2; loss: 0.7508625527843833; accuracy: 0.628125; 
+training > epoch: 3; loss: 0.5292640907116597; accuracy: 0.7341678939617083; 
+validation > epoch: 3; loss: 0.7553692519664764; accuracy: 0.63125; 
+
+
