@@ -28,15 +28,13 @@ class BaseEncoderModel(nn.Module):
     def __init__(
         self,  
         params: Configuration,
+        context_embedder: nn.Module,
         normalize: bool = False
         ):
             super(BaseEncoderModel, self).__init__()
             self.params = params
             self.normalize = normalize
-            self.context_embedder = ContextualEmbedder(
-                name=self.params.model, 
-                retrain=not self.params.model_parameters.freeze_weights
-            )
+            self.context_embedder = context_embedder
             
     def load_pretrained(self, path):
         checkpoint = torch.load(path)

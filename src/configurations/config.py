@@ -11,6 +11,7 @@ class ModelParameters:
     num_classes: int
     use_pretrained_embeddings: bool = False
     freeze_weights: bool = True
+    output_attention = False
     context_layers: Tuple[int] = (-1,)
 
 

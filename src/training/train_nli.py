@@ -18,21 +18,21 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--ep', type=int, dest="epochs")
+    parser.add_argument('--ep', type=int, dest="epochs", default=1)
     parser.add_argument('--name', type=str, dest="config_name")
     parser.add_argument('--lr', type=float, dest="lr", default=2e-5)
     parser.add_argument('--dp', type=float, dest="dropout", default=0.1)
     parser.add_argument('--bs', type=int, dest="batch_size", default=16)
-    parser.add_argument('--train_path', dest="train_path", type=str, default="../data/xnli/train-en.tsv")
-    parser.add_argument('--valid_path', dest="valid_path", type=str, default="../data/xnli/test-en.tsv")
-    parser.add_argument('--save_path', dest="save_path", type=str, default="../models/trained_models")
+    parser.add_argument('--train_path', dest="train_path", type=str, default="../data/jsnli/train_w_filtering.tsv")
+    parser.add_argument('--valid_path', dest="valid_path", type=str, default="../data/jsnli/dev.tsv")
+    parser.add_argument('--save_path', dest="save_path", type=str, default="../models/trained_models/entailment")
     parser.add_argument('--freeze', dest="freeze_weights", type=bool, default=False)
     parser.add_argument('--pretrained', dest="use_pretrained_embeddings", type=bool, default=False)
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
-    parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768*3)
+    parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=256)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
-    parser.add_argument('--model', type=str, dest="model", default="bert-base-cased")
+    parser.add_argument('--model', type=str, dest="model", default="cl-tohoku/bert-base-japanese-whole-word-masking")
     parser.add_argument('--setype', type=str, dest="sense_embeddings_type", default="ares_multi")
     parser.add_argument('--pooling', type=str, dest="pooling_strategy", default="avg")
     parser.add_argument('--sense_features', type=bool, dest="senses_as_features", default=True)
@@ -50,15 +50,18 @@ if __name__ == "__main__":
 
     # Training on a combination of mnli and snli
 
-    #train_dataset = EntailmentDataset.build_dataset([args.train_path])
+    #train_dataset = JPEntailmentDataset.build_dataset(args.train_path, n_examples=32)
 
-    #valid_dataset = EntailmentDataset.build_dataset([args.valid_path])
+    #valid_dataset = JPEntailmentDataset.build_dataset(args.valid_path, n_examples=32)
 
-    train_data_loader = load_file("../dataset/cached/train_xnli_en_16")#SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="standard")
-    valid_data_loader = load_file("../dataset/cached/valid_xnli_en_16")#SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="standard")
+    #train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="standard")
+    #valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="standard")
 
-    #save_file(train_data_loader, "../dataset/cached/", "train_xnli_en_16")
-    #save_file(valid_data_loader, "../dataset/cached/", "valid_xnli_en_16")
+    train_data_loader = load_file("../dataset/cached/train_jsnli16")
+    valid_data_loader = load_file("../dataset/cached/valid_jsnli16")
+
+    #save_file(train_data_loader, "../dataset/cached/", "train_jsnli16")
+    #save_file(valid_data_loader, "../dataset/cached/", "valid_jsnli16")
 
 
     metrics = {"training": [AccuracyMeter], "validation": [AccuracyMeter]}
@@ -70,7 +73,7 @@ if __name__ == "__main__":
         num_classes = 3,
         use_pretrained_embeddings = args.use_pretrained_embeddings,
         freeze_weights = args.freeze_weights,
-        context_layers = (-1, -2, -3, -4)
+        context_layers = (-1,)
     )
 
     configuration = config.Configuration(
@@ -83,15 +86,19 @@ if __name__ == "__main__":
         batch_size = args.batch_size,
         epochs = args.epochs,
         device = torch.device(args.device),
-        embedding_map = config.CONFIG.embedding_map,
-        bnids_map = config.CONFIG.bnids_map,
+        embedding_map = None,
+        bnids_map = None,
         tokenizer = transformers.AutoTokenizer.from_pretrained(args.model),
         pretrained_embeddings_dim = config.DIMENSIONS_MAP[args.sense_embeddings_type],
         senses_as_features = args.senses_as_features
     )
 
+    embedder_config = transformers.AutoConfig.from_pretrained(configuration.model)
+    embedder = transformers.AutoModel.from_pretrained(configuration.model, config=embedder_config)
+
     model = SiameseSentenceEmbedder(
         params = configuration,
+        context_embedder=embedder,
         loss = SoftmaxLoss,
         pooling_strategy = POOLING_STRATEGIES[args.pooling_strategy],
         pooler = EmbeddingsPooler,
@@ -102,13 +109,11 @@ if __name__ == "__main__":
     num_warmup_steps = int(num_train_steps*0.1)
 
     learner = Learner(
+        params = configuration,
         config_name=args.config_name, 
         model=model, 
-        lr=args.lr, 
-        bs=args.batch_size, 
         steps=num_train_steps, 
         warm_up_steps=num_warmup_steps, 
-        device=args.device, 
         fp16=args.mixed_precision, 
         metrics=metrics
     )

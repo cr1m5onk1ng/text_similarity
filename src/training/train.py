@@ -12,7 +12,11 @@ from src.utils import utils
 from typing import Union, List, Dict
 import logging
 import gc
+import logging
 
+logging.basicConfig(format='%(asctime)s - %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S',
+                    level=logging.INFO)
 
 class Trainer:
     def __init__(
@@ -53,16 +57,19 @@ class Trainer:
             merge_strategy = self.configuration.model.merge_strategy
         title = f" ------- Running training for model: {self.configuration.model.model_name} with config: {self.configuration.config_name} -------- \n"
         configs = f"Params: batch size: {self.train_data_loader.get_batch_size}; number of epochs: {self.epochs}; frozen weights: { self.configuration.model.params.model_parameters.freeze_weights}; pretrained embeddings: {self.configuration.model.params.model_parameters.use_pretrained_embeddings}"
-        configs += f"\nModel params: hidden size: {self.configuration.model.params.model_parameters.hidden_size}; lr: {self.configuration.lr};"
+        configs += f"\nModel params: hidden size: {self.configuration.model.params.model_parameters.hidden_size}; lr: {self.configuration.model.params.lr};"
         configs += f" merge strategy: {merge_strategy}"
         if self.verbose:
-            print(title)
+            logging.info(title)
             print()
-            print(configs)
+            logging.info(configs)
         messages.append(title)
         messages.append(configs)
         best_metric = np.inf if self.direction == "minimize" else np.NINF
         for epoch in range(self.epochs):
+            print()
+            logging.info(f"######## Epoch: {epoch+1} #########")
+            print()
             train_res = self.configuration.train_fn(self.train_data_loader)
             if self.configuration.eval_in_train:
                 valid_res = self.configuration.evaluate(
@@ -99,7 +106,7 @@ class Trainer:
             
         messages.append("\n")
         if write_results:
-            print("writing results to file")
+            logging.info("writing results to file")
             with open(os.path.join("results", self.name), "w+") as f:
                 for m in messages:
                     f.write(m+"\n")

@@ -1,0 +1,8 @@
+ ------- Running training for model: sbert-jp-jsnli-test with config: sbert-jp-jsnli-test -------- 
+
+Params: batch size: 16; number of epochs: 1; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 2304; lr: 2e-05; merge strategy: SentenceBertCombineStrategy()
+training > epoch: 1; loss: 1.0799676775932312; accuracy: 0.4375; 
+validation > epoch: 1; loss: 1.1587272882461548; accuracy: 0.125; 
+
+

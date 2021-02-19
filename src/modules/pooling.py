@@ -5,7 +5,7 @@ from src.dataset.dataset import *
 import src.configurations.config as config
 from src.configurations.config import ModelParameters
 from src.utils import utils as utils
-from typing import Union, Dict, List, Callable
+from typing import Iterable, Union, Dict, List, Callable
 
 
 class LearningStrategy(nn.Module):
@@ -107,7 +107,7 @@ class AvgPoolingStrategy(PoolingStrategy):
         assert len(embeddings.shape) == 3 #batch, seq_len, embed_size
         mask = features.attention_mask
         #we expand the mask to include the embed_size dimension
-        mask = mask.unsqueeze(-1).expand(embeddings.size())
+        mask = mask.unsqueeze(-1).expand(embeddings.size()).float()
         #we zero out the weights corresponding to the zero positions
         # of the mask and we sum over the seq_len dimension
         out = torch.sum(embeddings * mask, 1)
@@ -141,13 +141,12 @@ class MergingStrategy(LearningStrategy):
         raise NotImplementedError()
 
 
-class EmbeddingsCombineStrategy(MergingStrategy):
+class EmbeddingsSimilarityCombineStrategy(MergingStrategy):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def forward(self, features, *embeddings):
-        assert embeddings is not None
-        out = torch.cat(tuple(embeddings), dim=-1)
+    def forward(self, features: DataLoaderFeatures, embed_1: torch.Tensor, embed_2: torch.Tensor):
+        out = torch.stack([embed_1, embed_2], dim=0)
         return out
 
 
@@ -159,7 +158,7 @@ class SentenceBertCombineStrategy(MergingStrategy):
         diff = embeddings_1 - embeddings_2
         out = torch.cat((embeddings_1, embeddings_2, diff), dim=-1)
         return out
-
+        
 
 class Pooler(nn.Module):
     """Module that pools the output of another module according to different strategies """

@@ -68,11 +68,10 @@ class ParaphraseExample():
         return self.sent2
 
 
-class ParallelParaphraseExample():
-    def __init__(self, src_lang_example, tgt_lang_example, label):
+class ParallelExample():
+    def __init__(self, src_lang_example, tgt_lang_example):
         self.src_lang_example = src_lang_example
         self.tgt_lang_example = tgt_lang_example
-        self.label = label
 
     @property
     def get_src_lang_example(self):
@@ -82,12 +81,8 @@ class ParallelParaphraseExample():
     def get_tgt_lang_example(self):
         return self.tgt_lang_example
 
-    @property
-    def get_label(self):
-        return self.label
 
-
-class ParaphraseDataset():
+class Dataset():
     def __init__(self, examples, labels):
         self.examples, self.labels = examples, labels
     
@@ -105,6 +100,11 @@ class ParaphraseDataset():
     def get_labels(self):
         return self.labels
 
+
+class ParaphraseDataset(Dataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
     @classmethod
     def build_mulilingual(cls, paths):
         examples = []
@@ -120,7 +120,6 @@ class ParaphraseDataset():
         labels = [ex.get_label for ex in examples]
             
         return cls(examples, labels)
-
 
 import gzip
 class ParallelDataset():
@@ -147,10 +146,10 @@ class ParallelDataset():
         src_sentences = []
         trg_sentences = []
         for filepath in filepaths:
-            with gzip.open(filepath, 'rt', encoding='utf8') if filepath.endswith('.gz') else open(filepath, 'r', encoding='utf8') as fIn:
-                for line in fIn:
+            with gzip.open(filepath, 'rt', encoding='utf8') if filepath.endswith('.gz') else open(filepath, 'r', encoding='utf8') as f:
+                for line in f:
                     splits = line.strip().split('\t')
-                    if len(splits) >= 2:
+                    if len(splits) == 2:
                         src_sentences.append(splits[0])
                         trg_sentences.append(splits[1])
         return cls(src_sentences, trg_sentences)
@@ -186,7 +185,7 @@ class ParaphraseProcessor():
         return ParaphraseDataset(examples, labels)
 
 
-class ParallelParaphraseProcessor(ParaphraseProcessor):
+class ParallelProcessor(ParaphraseProcessor):
     def __init__(self):
         super().__init__()
     
@@ -566,8 +565,6 @@ class SmartParaphraseDataloader(DataLoader):
             batch = dataset[select:select+to_take]           
             
             b_labels = []
-            src_sentences_1 = []
-            src_sentences_2 = []
             sentences_1 = []
             sentences_2 = []
             sent_pairs = []

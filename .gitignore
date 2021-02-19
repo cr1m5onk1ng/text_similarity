@@ -5,3 +5,5 @@ src/training/trained_models
 src/dataset/cached
 build
 src/embeddings
+tests
+training/results

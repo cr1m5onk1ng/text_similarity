@@ -1,3 +1,4 @@
+from typing import Union
 import numpy as np
 from sklearn import metrics
 from sklearn.metrics.pairwise import paired_cosine_distances
@@ -37,7 +38,7 @@ def mean_squared_error(y_true, y_pred):
 
 def root_mse(y_true, y_pred):
     labels, preds = flatten(y_true, y_pred)
-    return np.sqrt(self._mean_squared_error(y_true, y_pred))
+    return np.sqrt(mean_squared_error(y_true, y_pred))
 
 def mean_squared_log_error(y_true, y_pred):
     labels, preds = flatten(y_true, y_pred)
@@ -158,7 +159,7 @@ class AverageMeter:
     @property
     def get_name(self):
         return self.name
-
+        
 
 class AccuracyMeter(AverageMeter):
 

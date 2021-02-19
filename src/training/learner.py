@@ -1,3 +1,5 @@
+import os
+from src.configurations.config import Configuration
 import torch
 from tqdm import tqdm
 from torch.cuda import amp
@@ -27,28 +29,24 @@ class SimilarityOutput(ModelOutput):
 class Learner:
     def __init__(
         self,
+        params: Configuration,
         config_name: str,
         model: torch.nn.Module,
-        lr: float,
-        bs: int,
         steps: int,
-        device: torch.device,
         accumulation_steps: int = 1,
         warm_up_steps: int = 0,
-        fp16: bool = False,
+        fp16: bool = True,
         max_grad_norm: int = 1,
         use_mean_loss: bool = False,
         metrics: Union[List[AverageMeter], None] = None,
         verbose: bool = True,
         eval_in_train: bool = False
     ):
+        self.params = params
         self.config_name = config_name
         self.model = model
-        self.lr = lr
-        self.bs = bs
         self.steps = steps
         self.warm_up_steps = warm_up_steps
-        self.device = device
         self.accumulation_steps = accumulation_steps
         self.max_grad_norm = max_grad_norm
         self.fp16 = fp16
@@ -59,7 +57,7 @@ class Learner:
         self.eval_in_train = eval_in_train
         if self.fp16:
             self.scaler = amp.GradScaler() 
-        self.optimizer = Learner.set_up_optimizer(self.model, self.lr)
+        self.optimizer = Learner.set_up_optimizer(self.model, self.params.lr)
         self.scheduler = Learner.set_up_scheduler(self.optimizer, self.steps, self.warm_up_steps)
         
     @staticmethod
@@ -90,14 +88,57 @@ class Learner:
         return scheduler 
 
     def save_model(self, path):
+        #Saving model
+        assert(path is not None)
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+
+
         torch.save(
             {
                 'model_state_dict': self.model.state_dict(),
+                'embedder_state_dict': self.model.context_embedder.state_dict(),
+                'pooler_state_dict': self.model.pooler.state_dict(),
                 'optimizer_state_dict': self.optimizer.state_dict()
             },
-            path
+            os.path.join(path, f"{self.config_name}.bin")
         )
 
+        #Saving parameters
+        torch.save(self.params, os.path.join(path, "training_params.bin"))
+
+    def step(self, data, b_idx):
+        model_output = self.model(data)
+        loss = model_output.loss
+        logits = None
+        if hasattr(model_output, "predictions"):
+            logits = model_output.predictions
+        if self.accumulation_steps > 1:
+            loss = loss / self.accumulation_steps
+        loss.backward()
+        if self.max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        if (b_idx + 1) % self.accumulation_steps == 0:
+            self.optimizer.step()
+        return loss, logits
+
+    def mixed_precision_step(self, data, b_idx):
+        logits = None
+        with amp.autocast():
+            model_output = self.model(data)
+            loss = model_output.loss
+            if hasattr(model_output, "predictions"):
+                logits = model_output.predictions
+        scale_before_step = self.scaler.get_scale()
+        self.scaler.scale(loss).backward()
+        if self.max_grad_norm is not None:
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+  
+        return loss, logits, scale_before_step
+      
     def train_fn(self, data_loader):
         losses = AverageMeter("loss")
         if self.metrics is not None:
@@ -105,37 +146,19 @@ class Learner:
         else:
             meters = None
         iterator = tqdm(data_loader, total=len(data_loader))
-        self.model.to(self.device)
+        self.model.to(self.params.device)
         self.model.train()
         results = []
         for b_idx, data in enumerate(iterator):
-            data.to_device(self.device)
+            data.to_device(self.params.device)
             if self.accumulation_steps == 1 and b_idx == 0:
                 self.optimizer.zero_grad()
             skip_scheduler = False
             if self.fp16:
-                with amp.autocast():
-                    model_output = self.model(data)
-                    loss = model_output.loss
-                    logits = model_output.predictions
-                scale_before_step = self.scaler.get_scale()
-                self.scaler.scale(loss).backward()
-                if self.max_grad_norm is not None:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                if (b_idx + 1) % self.accumulation_steps == 0:
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
+                loss, logits, scale_before_step = self.mixed_precision_step(data, b_idx)
                 skip_scheduler = self.scaler.get_scale() != scale_before_step
             else:
-                model_output = self.model(data)
-                loss = model_output.loss
-                logits = model_output.predictions
-                loss.backward()
-                if self.max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                if (b_idx + 1) % self.accumulation_steps == 0:
-                    self.optimizer.step()
+               loss, logits = self.step(data, b_idx)
 
             if b_idx > 0:
                 self.optimizer.zero_grad()
@@ -144,13 +167,14 @@ class Learner:
                 if not skip_scheduler:
                     self.scheduler.step()
         
-            labels = data.labels.cpu().numpy()
-            if logits is not None:
-                logits = logits.detach().cpu().numpy()
-                if meters is not None:
-                    for m in meters.metrics:
-                        m.update(logits, labels, n=data_loader.get_batch_size)
             losses.update(loss.item(), data_loader.get_batch_size)
+            if meters is not None:
+                    labels = data.labels.cpu().numpy()
+                    if logits is not None:
+                        logits = logits.detach().cpu().numpy()
+                        for m in meters.metrics:
+                            m.update(logits, labels, n=data_loader.get_batch_size)
+                    iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
             if meters is not None:
                 iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
         iterator.close()
@@ -169,14 +193,12 @@ class Learner:
             meters = Metrics(*self.metrics["validation"], mode="validation", return_predictions=return_predictions)
         else:
             meters = None
-        self.model.to(self.device)
+        self.model.to(self.params.device)
         self.model.eval()
-        final_predictions = []
-        all_labels = []
         with torch.no_grad():
             iterator = tqdm(data_loader, total=len(data_loader))
             for b_idx, data in enumerate(iterator):
-                data.to_device(self.device)
+                data.to_device(self.params.device)
                 if self.fp16:
                     with amp.autocast():
                         model_output = self.model(data)
@@ -187,14 +209,13 @@ class Learner:
                 
                 if self.use_mean_loss:
                     loss = loss.mean()
-                losses.update(loss.item(), data_loader.batch_size)
-                labels = data.labels.cpu().numpy()
-                if logits is not None:
-                    logits = logits.detach().cpu().numpy()
-                    if meters is not None:
+                losses.update(loss.item(), self.params.batch_size)
+                if meters is not None:
+                    labels = data.labels.cpu().numpy()
+                    if logits is not None:
+                        logits = logits.detach().cpu().numpy()
                         for m in meters.metrics:
                             m.update(logits, labels, n=data_loader.get_batch_size)
-                if meters is not None:
                     iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
             iterator.close()
         if self.verbose and meters is not None:
@@ -209,6 +230,9 @@ class Learner:
                 m.reset()
         return results
 
+    def eval_prune(self, data_loader):
+        pass
+
     def evaluate(self, data_loader, return_predictions=False, convert_to_numpy=False):
         if self.metrics is not None:
             meters = Metrics(*self.metrics["validation"], mode="validation", return_predictions=return_predictions)
@@ -216,8 +240,6 @@ class Learner:
             meters = None
         self.model.to(self.device)
         self.model.eval()
-        final_predictions = []
-        all_labels = []
         results = {}
         with torch.no_grad():
             iterator = tqdm(data_loader, total=len(data_loader))

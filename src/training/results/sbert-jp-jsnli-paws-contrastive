@@ -1,0 +1,8 @@
+ ------- Running training for model: sbert-jp-jsnli-paws-contrastive with config: sbert-jp-jsnli-paws-contrastive -------- 
+
+Params: batch size: 16; number of epochs: 1; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 2304; lr: 2e-05; merge strategy: EmbeddingsSimilarityCombineStrategy()
+training > epoch: 1; loss: 0.893272312999814; ap: 0.6131408450563137; accuracy: 0.5782509355210133; 
+validation > epoch: 1; loss: 0.9109016001224518; ap: 0.6126460592990467; accuracy: 0.5765; 
+
+

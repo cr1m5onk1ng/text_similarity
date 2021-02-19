@@ -34,10 +34,16 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
             normalize = self.normalize
         )
      
-    def forward(self, features: SiameseDataLoaderFeatures):
+    def forward(self, features: SiameseDataLoaderFeatures, head_mask=None):
         #weights are shared, so we call only one model for both sentences
-        embed_1 = self.context_embedder(**features.sentence_1_features.to_dict())
-        embed_2 = self.context_embedder(**features.sentence_2_features.to_dict())
+        embed_1 = self.context_embedder(
+            **features.sentence_1_features.to_dict(), 
+            head_mask=head_mask,
+            output_attentions=self.params.model_parameters.output_attention)[0]
+        embed_2 = self.context_embedder(
+            **features.sentence_2_features.to_dict(), 
+            head_mask=head_mask,
+            output_attentions=self.params.model_parameters.output_attention)[0]
 
         pooled_1 = self.pooler(embed_1, features.sentence_1_features)
         pooled_2 = self.pooler(embed_2, features.sentence_2_features)
@@ -46,18 +52,14 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
 
         return self.loss(merged, features)
 
-    def encode(self, features: SiameseDataLoaderFeatures, **kwargs):
+    def encode(self, features: DataLoaderFeatures, **kwargs):
         with torch.no_grad():
-            embed_1 = self.embedder(**features.sentence_1_features.to_dict())
-            embed_2 = self.embedder(**features.sentence_2_features.to_dict())
-
-            pooled_1 = self.pooler(embed_1, features.sentence_1_features)
-            pooled_2 = self.pooler(embed_2, features.sentence_2_features)
-
-            return self.merge_strategy(features, pooled_1, pooled_2)
+            embed = self.embedder(**features.embeddings_features.to_dict())[0]
+            pooled = self.pooler(embed, features.embeddings_features)
+        return pooled
 
     def set_hidden_size(self):
-        embedder_size = self.context_embedder.embedding_size
+        embedder_size = self.context_embedder.config.hidden_size
         pretrained_size = self.params.pretrained_embeddings_dim
         hidden_size = embedder_size * 3
         if self.params.model_parameters.use_pretrained_embeddings:
@@ -66,3 +68,8 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
             else:
                 hidden_size = embedder_size + pretrained_size
         self.params.model_parameters.hidden_size = hidden_size
+
+    def load_pretrained(self, path):
+        checkpoint = torch.load(path)
+        self.context_embedder.load_state_dict(checkpoint["embedder_state_dict"], strict=True)
+        self.pooler.load_state_dict(checkpoint['pooler_state_dict'], strict=True)

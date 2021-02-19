@@ -51,4 +51,38 @@ class EntailmentDataset(ParaphraseDataset):
 
         random.shuffle(examples)
         labels = [ex.get_label for ex in examples]
-        return EntailmentDataset(examples, labels)
+        return cls(examples, labels)
+
+
+class JPEntailmentDataset(ParaphraseDataset):
+    def __init__(self, examples, labels):
+        super().__init__(examples, labels)
+
+    def __getitem__(self, i):
+        return self.examples[i], self.labels[i]
+
+    def __len__(self):
+        return len(self.examples)
+
+    @classmethod
+    def build_dataset(cls, path, n_examples=None):
+        label2class = {"contradiction": 0, "entailment": 1, "neutral": 2}
+        examples = []
+        with open(path, 'r', encoding='utf8') as f:
+            if n_examples is not None:
+                examples_read = 0
+            for line in f:
+                try:
+                    label, sent1, sent2  = line.strip().split("\t")
+                except ValueError:
+                    continue
+                label = label2class[label]
+                example = EntailmentExample(sent1, sent2, label)
+                examples.append(example)
+                if n_examples is not None:
+                    examples_read += 1
+                    if examples_read >= n_examples:
+                        break 
+        random.shuffle(examples)
+        labels = [ex.get_label for ex in examples]
+        return cls(examples, labels)
