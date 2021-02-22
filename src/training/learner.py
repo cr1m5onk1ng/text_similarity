@@ -17,7 +17,8 @@ class ModelOutput:
 
 @dataclass
 class ClassifierOutput(ModelOutput):
-    predictions: Union[torch.Tensor, np.array]
+    predictions: Union[torch.Tensor, np.array, None]
+    attention: Union[torch.Tensor, None] = None
 
 
 @dataclass
@@ -93,16 +94,18 @@ class Learner:
         if not os.path.exists(path):
             os.makedirs(path, exist_ok=True)
 
+        d = {}
 
-        torch.save(
-            {
-                'model_state_dict': self.model.state_dict(),
-                'embedder_state_dict': self.model.context_embedder.state_dict(),
-                'pooler_state_dict': self.model.pooler.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict()
-            },
-            os.path.join(path, f"{self.config_name}.bin")
-        )
+        if hasattr(self.model, 'context_embedder'):
+            d['embedder_state_dict'] = self.model.context_embedder.state_dict()
+        if hasattr(self.model, 'pooler'):
+            d['pooler_state_dict'] = self.model.pooler.state_dict()
+        if not hasattr(self.model, "context_embedder") and not hasattr(self.model, "pooler"):
+            d['model_state_dict'] = self.model.state_dict()
+
+        d['optimizer_state_dict'] = self.optimizer.state_dict()
+
+        torch.save(d, os.path.join(path, f"{self.config_name}.bin"))
 
         #Saving parameters
         torch.save(self.params, os.path.join(path, "training_params.bin"))

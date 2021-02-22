@@ -1,5 +1,7 @@
 from os import name
 import os
+
+from src.training.train import Trainer
 from src.models.modeling import BaseEncoderModel
 import numpy as np
 from src.configurations.config import Configuration
@@ -36,40 +38,38 @@ class Pruner(Learner):
     """
     def __init__(
         self, 
-        config_name: str, 
-        params: Configuration,
-        model: BaseEncoderModel, 
-        steps: int,
         output_path: str, 
         n_heads: int, 
-        n_dense: int
+        n_dense: int,
+        *args,
+        **kwargs
     ):
         # get the model intermediate layer weights and biases
-        super().__init__(config_name= config_name, params=params, model=model, steps=steps)
+        super().__init__(*args, **kwargs)
         self.n_heads = n_heads
         self.n_dense = n_dense
         self.output_path = output_path
         self.inter_weights = torch.zeros(
             self.model.context_embedder.config.num_hidden_layers, 
             self.model.context_embedder.config.intermediate_size,
-            self.model.context_embedder.config.hidden_size).to(params.device)
+            self.model.context_embedder.config.hidden_size).to(self.params.device)
         self.inter_biases = torch.zeros(
             self.model.context_embedder.config.num_hidden_layers,
-            self.model.context_embedder.config.hidden_size).to(params.device)
+            self.model.context_embedder.config.hidden_size).to(self.params.device)
         self.output_weights = torch.zeros(
             self.model.context_embedder.config.num_hidden_layers,
             self.model.context_embedder.config.hidden_size,
-            self.model.context_embedder.config.intermediate_size).to(params.device)
+            self.model.context_embedder.config.intermediate_size).to(self.params.device)
 
         #a list of all the layers of the transformer model
         self.layers = self.model.context_embedder.base_model.encoder.layer
 
         self.head_importance = torch.zeros(
             self.self.model.context_embedder.config.num_hidden_layers,
-            self.self.model.context_embedder.config.num_attention_heads).to(params.device)
+            self.self.model.context_embedder.config.num_attention_heads).to(self.params.device)
         self.ffn_importance = torch.zeros(
             self.self.model.context_embedder.config.num_hidden_layers,
-            self.self.model.context_embedder.config.intermediate_size).to(params.device)
+            self.self.model.context_embedder.config.intermediate_size).to(self.params.device)
 
         # filling the weights with the original data
         for layer_num in range(self.model.context_embedder.config.num_hidden_layers):
@@ -81,7 +81,7 @@ class Pruner(Learner):
         self.head_mask = torch.ones(
             self.model.context_embedder.config.num_hidden_layers,
             self.model.context_embedder.config.num_attention_heads, 
-            requires_grad=True).to(params.device)
+            requires_grad=True).to(self.params.device)
 
     def update_importance(self):
         for layer_num in range(self.model.context_edbedder.model.config.num_hidden_layers):
@@ -268,40 +268,39 @@ class Pruner(Learner):
         return results
 
 
-class Distiller:
+class Distiller(Learner):
     """
     Distiller module based on SBERT implementation
     """
     def __init__(
         self, 
-        params: Configuration,
         teacher_model: SiameseSentenceEmbedder, 
         train_dataloader: DataLoader,
         model_save_path,
-        layers=(1, 4, 7, 10)
+        *args,
+        layers=(1, 4, 7, 10),
+        **kwargs
         ):
-        self.params = params
+        super().__init__(*args, **kwargs)
         self.teacher_model = teacher_model
         self.train_dataloader = train_dataloader
         self.model_save_path = model_save_path
-        self.student_model = SiameseSentenceEmbedder(params=params, loss=SimpleDistillationLoss(teacher=teacher_model))
-        layers_to_keep = nn.ModuleList([l for i, l in enumerate(self.student_self.model.context_embedder.model.encoder.layer) if i in layers])
-        self.student_self.model.context_embedder.model.encoder.layer = layers_to_keep
-        self.student_self.model.context_embedder.config.num_hidden_layers = len(layers_to_keep)
-        self.learner = Learner(config_name="distilled-embedder-"+params.model, model=self.student_model, params=params)
+        if isinstance(self.model, SiameseSentenceEmbedder):
+            layers_to_keep = nn.ModuleList([l for i, l in enumerate(self.model.context_embedder.encoder.layer) if i in layers])
+            self.model.context_embedder.encoder.layer = layers_to_keep
+            self.model.context_embedder.config.num_hidden_layers = len(layers_to_keep)
+        else:
+            layers_to_keep = nn.ModuleList([l for i, l in enumerate(self.model.encoder.layer) if i in layers])
+            self.model.encoder.layer = layers_to_keep
+            self.model.config.num_hidden_layers = len(layers_to_keep)
 
     def distill(self):
         logging.info(f"##### Making some fine liquor with model: {self.learner.config_name}#####")
         best_loss = np.inf
         self.student_model.zero_grad()
-        for epoch in range(self.params.epochs):
-            print(f"Epoch: {epoch}")
-            res = self.learner.train_fn(self.train_dataloader)
-            optim_metric = res['loss']
-            if optim_metric < best_loss:
-                best_loss = optim_metric
-                self.learner.save_model(os.path.join(self.model_save_path))
-        return best_loss
+        res = self.train_fn(self.train_dataloader)
+        self.save_model(self.model_save_path)
+        return res["loss"]
 
 
 class FastformersDistiller:

@@ -110,8 +110,24 @@ class SimpleDistillationLoss(Loss):
     def forward(self, student_embeddings, features):
         ### TODO DEFINE features.src in the DATALOADER
         self.teacher.eval()
-        teacher_embeddings = self.teacher.encode(features.src)
+        teacher_embeddings = self.teacher.encode(features)
         loss = self.loss(teacher_embeddings, student_embeddings)
+        return ModelOutput(loss=loss)
+
+
+# TODO PENSARE A COME IMPLEMENTARE ATTENTION DISTILLATION SU SBERT
+class AttentionDistillationLoss(Loss):
+    def __init__(self, teacher, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.teacher = teacher
+        self.loss = nn.MSELoss()
+
+    def forward(self, student_embeddings, features):
+        ### TODO DEFINE features.src in the DATALOADER
+        assert(self.params.output_attention == True)
+        self.teacher.eval()
+        output_teacher = self.teacher.encode(features.src)
+        loss = self.loss(output_teacher, student_embeddings)
         return ModelOutput(loss=loss)
 
 

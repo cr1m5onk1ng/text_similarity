@@ -68,6 +68,12 @@ class ParaphraseExample():
         return self.sent2
 
 
+class DocumentCorpusExample():
+    def __init__(self, text, id):
+        self.text = text
+        self.id = id
+
+
 class ParallelExample():
     def __init__(self, src_lang_example, tgt_lang_example):
         self.src_lang_example = src_lang_example
@@ -99,6 +105,18 @@ class Dataset():
     @property
     def get_labels(self):
         return self.labels
+
+
+class DocumentCorpusDataset:
+    def __init__(self, positive_examples, negative_examples):
+        self.positive_examples = positive_examples
+        self.negative_examples = negative_examples
+
+    def __getitem__(self, i):
+        return self.positive_examples[i], self.negative_examples[i]
+
+    def __len__(self):
+        return len(self.positive_examples) + len(self.negative_examples)
 
 
 class ParaphraseDataset(Dataset):
@@ -183,6 +201,22 @@ class ParaphraseProcessor():
         examples = self.get_examples(examples_path)
         labels = self.get_labels(labels_path)
         return ParaphraseDataset(examples, labels)
+
+    def build_document_dataset_from_paws(path):
+        positive_examples = []
+        negative_examples = []
+        with open(path, "r") as f:
+            for i, line in enumerate(f):
+                parts = line.split("\t")
+                id, sent1, sent2, label = parts
+                label = int(label)
+                sent_1_example = DocumentCorpusExample(sent1, i)
+                sent_2_example = DocumentCorpusExample(sent2, i)
+                if label == 1:
+                    positive_examples += [sent_1_example, sent_2_example]
+                else:
+                    negative_examples += [sent_1_example, sent_2_example]
+        return DocumentCorpusDataset(positive_examples, negative_examples)
 
 
 class ParallelProcessor(ParaphraseProcessor):
@@ -323,7 +357,6 @@ class DataLoader:
 
     @staticmethod 
     def find_word_in_tokenized_sentence(tokenized_word, token_ids, visited=None):
-        """PROVARE CON UN METODO CHE SALVA GLI INDICI IN UN SET, E SE GLI INDICI SONO GIA STATI VISITATI LI SALTA """
         # Iterate through to find a matching sublist of the token_ids
         #example ['CLS', 'em', '##bed', '##ding', '##s', 'fl', '##ab', '##berg', '##ast', '##ed', 'SEP']
         for i in range(len(token_ids)):
@@ -352,7 +385,7 @@ class SmartParaphraseDataloader(DataLoader):
         super().__init__(*args, **kwargs)
 
     @classmethod
-    def build_batches(cls, dataset, batch_size, sentence_pairs=False, mode='sense_retrieval'):
+    def build_batches(cls, dataset, batch_size, sentence_pairs=False, mode='standard'):
         assert mode in ["sense_retrieval", "standard", "parallel_data", "tatoeba"]
         if mode == "parallel_data":
             key = lambda x: len(x[0].get_src_example.get_sent1.strip().split(" ") + x[0].get_src_example.get_sent2.strip().split(" "))

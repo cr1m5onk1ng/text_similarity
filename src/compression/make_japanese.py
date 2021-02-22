@@ -5,11 +5,10 @@ from sentence_transformers.datasets import ParallelSentencesDataset
 from sentence_transformers.losses import MSELoss
 from sentence_transformers.evaluation import MSEEvaluator
 from sentence_transformers import SentenceTransformer
-import transformers
 import argparse
 from torch.utils.data import DataLoader
 import numpy as np
-from ..utils.utils import save_file, load_file
+from src.utils.utils import save_file, load_file
 
 if __name__ == '__main__':
 
@@ -29,8 +28,8 @@ if __name__ == '__main__':
         parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
         parser.add_argument('--seq_len', type=int, dest="seq_len", default=256)
         parser.add_argument('--device', type=str, dest="device", default="cuda")
-        parser.add_argument('--student', type=str, dest="student_model", default="cl-tohoku/bert-base-japanese-whole-word-masking")
-        parser.add_argument('--teacher', type=str, dest="teacher_model", default="cl-tohoku/bert-base-japanese-whole-word-masking")
+        parser.add_argument('--student', type=str, dest="student_model", default="bert-base-multilingual-cased")
+        parser.add_argument('--teacher', type=str, dest="teacher_model", default="bert-base-nli-stsb-mean-tokens")
         parser.add_argument('--setype', type=str, dest="sense_embeddings_type", default="ares_multi")
         parser.add_argument('--pooling', type=str, dest="pooling_strategy", default="avg")
         parser.add_argument('--loss', type=str, dest="loss", default="softmax")
@@ -48,9 +47,9 @@ if __name__ == '__main__':
 
         train_data = ParallelSentencesDataset(student_model=student_model, teacher_model=teacher_model)
         train_data.load_data(args.train_path)
-        train_data_loader = DataLoader(train_data, shuffle=True, batch_size=args.batch_size)
-
-        save_file(train_data_loader, "../dataset/cached", f"st-jesc-train-{args.batch_size}")
+        #train_data_loader = DataLoader(train_data, shuffle=True, batch_size=args.batch_size)
+        train_data_loader = load_file("../dataset/cached/st-jesc-train-16")
+        #save_file(train_data_loader, "../dataset/cached", f"st-jesc-train-{args.batch_size}")
 
         train_loss = MSELoss(model=student_model)
 
@@ -62,15 +61,15 @@ if __name__ == '__main__':
         #NEED TO PASS SRC SENTENCES AND TARGET SENTENCES REFER TO make_multilingual.py
         mse_evaluator = MSEEvaluator(
             source_sentences=src_sentences, 
-            tgt_sentences=tgt_sentences, 
+            target_sentences=tgt_sentences, 
             name="jesc-dev-evaluator", 
             teacher_model=teacher_model, 
             batch_size=args.batch_size
         )
 
         translation_evaluator = evaluation.TranslationEvaluator(
-            src_sentences=src_sentences,
-            tgt_sentences=tgt_sentences,
+            src_sentences,
+            tgt_sentences,
             name="jesc-translation-evaluator",
             batch_size=args.batch_size,
         )
@@ -85,5 +84,6 @@ if __name__ == '__main__':
             evaluation_steps = 1000,
             output_path = args.save_path,
             save_best_model = True,
+            use_amp= True,
             optimizer_params = {'lr': 2e-5, 'eps': 1e-6, 'correct_bias': False}
         )

@@ -2,6 +2,7 @@ setup.py
 ml-code-workspace.code-workspace
 src/data
 src/training/trained_models
+src/models/trained_models
 src/dataset/cached
 build
 src/embeddings
