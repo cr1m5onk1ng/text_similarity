@@ -155,7 +155,7 @@ class SentenceBertCombineStrategy(MergingStrategy):
         super().__init__(*args, **kwargs)
 
     def forward(self, features, embeddings_1, embeddings_2):
-        diff = embeddings_1 - embeddings_2
+        diff = torch.abs(embeddings_1 - embeddings_2)
         out = torch.cat((embeddings_1, embeddings_2, diff), dim=-1)
         return out
         

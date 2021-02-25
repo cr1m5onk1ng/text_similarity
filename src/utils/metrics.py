@@ -1,7 +1,7 @@
 from typing import Union
 import numpy as np
 from sklearn import metrics
-from sklearn.metrics.pairwise import paired_cosine_distances
+from sklearn.metrics.pairwise import paired_cosine_distances, paired_euclidean_distances, paired_manhattan_distances
 from sklearn.metrics import roc_curve, precision_recall_curve
 from scipy.stats import pearsonr, spearmanr
 from collections import OrderedDict
@@ -313,6 +313,42 @@ class SimilarityAccuracyMeter(AverageMeter):
         self.count += n
         self.avg = self.sum / self.count
 
+
+class EmbeddingSimilarityMeter(AverageMeter):
+    def __init__(self, **kwargs):
+        super().__init__(name="embed_sim", **kwargs)
+        self.eval_pearson_cosine = 0
+        self.eval_spearman_cosine = 0
+        self.eval_pearson_manhattan = 0
+        self.eval_spearman_manhattan = 0
+        self.eval_pearson_euclidean = 0
+        self.eval_spearman_euclidean = 0
+        self.eval_pearson_dot = 0
+        self.eval_spearman_dot = 0
+
+
+    def __str__(self):
+        return "embed_sim: {:.2f}".format(self.avg) 
+
+    def update(self, embeddings, labels, n, **kwargs):
+        embeddings1 = embeddings[0]
+        embeddings2 = embeddings[1]
+        cosine_scores = 1 - (paired_cosine_distances(embeddings1, embeddings2))
+        manhattan_distances = -paired_manhattan_distances(embeddings1, embeddings2)
+        euclidean_distances = -paired_euclidean_distances(embeddings1, embeddings2)
+        dot_products = [np.dot(emb1, emb2) for emb1, emb2 in zip(embeddings1, embeddings2)]
+        self.eval_pearson_cosine, _ = pearsonr(labels, cosine_scores)
+        self.eval_spearman_cosine, _ = spearmanr(labels, cosine_scores)
+        self.eval_pearson_manhattan, _ = pearsonr(labels, manhattan_distances)
+        self.eval_spearman_manhattan, _ = spearmanr(labels, manhattan_distances)
+        self.eval_pearson_euclidean, _ = pearsonr(labels, euclidean_distances)
+        self.eval_spearman_euclidean, _ = spearmanr(labels, euclidean_distances)
+        self.eval_pearson_dot, _ = pearsonr(labels, dot_products)
+        self.eval_spearman_dot, _ = spearmanr(labels, dot_products)
+        self.val = max(self.eval_spearman_cosine, self.eval_spearman_manhattan, self.eval_spearman_euclidean, self.eval_spearman_dot)
+        self.sum += self.val * n
+        self.count += n
+        self.avg = self.sum / self.count
 
 class SimilarityAveragePrecisionMeter(AverageMeter):
     def __init__(self, **kwargs):

@@ -19,15 +19,15 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--ep', type=int, dest="epochs", default=1)
-    parser.add_argument('--name', type=str, dest="config_name", required=True)
+    parser.add_argument('--ep', type=int, dest="epochs", default=4)
+    parser.add_argument('--name', type=str, dest="config_name")
     parser.add_argument('--lr', type=float, dest="lr", default=2e-5)
     parser.add_argument('--dp', type=float, dest="dropout", default=0.1)
     parser.add_argument('--bs', type=int, dest="batch_size", default=16)
-    parser.add_argument('--train_path', dest="train_path", type=str, default="../data/nli/AllNLI.tsv")
-    parser.add_argument('--valid_path', dest="valid_path", type=str, default="../data/xnli/dev-en.tsv")
-    parser.add_argument('--save_path', dest="save_path", type=str, default="../trained_models/entailment")
-    parser.add_argument('--pretrained', dest="use_pretrained_embeddings", type=bool, default=False)
+    parser.add_argument('--train_path', dest="train_path", type=str, default="../data/sts/stsbenchmark.tsv")
+    parser.add_argument('--valid_path', dest="valid_path", type=str, default="../data/sts/stsbenchmark.tsv")
+    parser.add_argument('--save_path', dest="save_path", type=str, default="../models/trained_models")
+    parser.add_argument('--pretrained_path', dest="pretrained_path", type=str, default="../training/trained_models/sencoder-bert-nli/")
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
     parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
@@ -46,20 +46,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Training on a combination of mnli and snli
-
-    #train_data_loader = load_file("../dataset/cached/nli/train_all_nli_16")
-    #valid_data_loader = load_file("../dataset/cached/nli/valid_xnli_en_16")
+    metrics = {"training": [EmbeddingSimilarityMeter], "validation": [EmbeddingSimilarityMeter]}
 
 
-    metrics = {"training": [AccuracyMeter], "validation": [EmbeddingSimilarityMeter]}
-
-
-    model_config = config.SenseModelParameters(
+    model_config = config.ModelParameters(
         model_name = args.config_name,
         hidden_size = args.hidden_size,
-        num_classes = 3,
-        use_pretrained_embeddings = args.use_pretrained_embeddings,
         freeze_weights = False,
         context_layers = (-1,)
     )
@@ -75,16 +67,17 @@ if __name__ == "__main__":
         epochs = args.epochs,
         device = torch.device(args.device),
         tokenizer = transformers.AutoTokenizer.from_pretrained(args.model),
+      
     )
 
-    train_dataset = EntailmentDataset.build_dataset(args.train_path, max_examples=100)
-    valid_dataset = StsDataset.build_dataset("../data/sts/stsbenchmark.tsv", mode="dev")
+    train_dataset = StsDataset.build_dataset(args.train_path, mode="train")
+    valid_dataset = StsDataset.build_dataset(args.valid_path, mode="test")
     print("Building batches. This may take a while.")
     train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="standard", config=configuration)
     valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="standard", config=configuration)
     print("Done.")
-    #save_file(train_data_loader, "../dataset/cached/nli", "train_all_nli_16")
-    #save_file(valid_data_loader, "../dataset/cached/nli", "valid_xnli_en_16")
+    #save_file(train_data_loader, "../dataset/cached/sts", "train_sts_16")
+    #save_file(valid_data_loader, "../dataset/cached/sts", "valid_sts_16")
 
     embedder_config = transformers.AutoConfig.from_pretrained(configuration.model)
     embedder = transformers.AutoModel.from_pretrained(configuration.model, config=embedder_config)
@@ -92,11 +85,13 @@ if __name__ == "__main__":
     model = SiameseSentenceEmbedder(
         params = configuration,
         context_embedder=embedder,
-        loss = SoftmaxLoss,
+        loss = CosineSimilarityLoss,
         pooling_strategy = POOLING_STRATEGIES[args.pooling_strategy],
         pooler = EmbeddingsPooler,
-        merge_strategy = SentenceBertCombineStrategy
+        merge_strategy = EmbeddingsSimilarityCombineStrategy
     )
+
+    model.load_pretrained(args.pretrained_path)
 
     num_train_steps = len(train_data_loader) * args.epochs
     num_warmup_steps = int(num_train_steps*0.1)

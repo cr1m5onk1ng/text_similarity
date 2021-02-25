@@ -1,4 +1,5 @@
-from .dataset import *
+from src.configurations.config import load_file
+from src.dataset.dataset import *
 
 class EntailmentExample(ParaphraseExample):
     def __init__(self, sent1, sent2, label, **kwargs):
@@ -21,68 +22,36 @@ class EntailmentDataset(ParaphraseDataset):
         return len(self.examples)
 
     @classmethod
-    def build_dataset(cls, paths, snli_path=None):
-        label2class = {"contradiction": 0, "entailment": 1, "neutral": 2}
-        examples = []
-        
-        for path in paths:
-            with open(path, 'r', encoding='utf8') as f:
-                for line in f:
-                    try:
-                        sent1, sent2, label = line.strip().split("\t")
-                    except ValueError:
-                        continue
-                    label = label2class[label]
-                    example = EntailmentExample(sent1, sent2, label)
-                    examples.append(example)
-
-        if snli_path is not None:
-            with open(snli_path, "r") as f:
-                for line in f:
-                    obj = json.loads(line)
-                    sent1 = str(obj["sentence1"]).strip()
-                    sent2 = str(obj["sentence2"]).strip()   
-                    label = str(obj["gold_label"]).strip()
-                    if label not in label2class:
-                        continue
-                    label = label2class[label]
-                    example = EntailmentExample(sent1, sent2, label)
-                    examples.append(example)
-
-        random.shuffle(examples)
-        labels = [ex.get_label for ex in examples]
-        return cls(examples, labels)
-
-
-class JPEntailmentDataset(ParaphraseDataset):
-    def __init__(self, examples, labels):
-        super().__init__(examples, labels)
-
-    def __getitem__(self, i):
-        return self.examples[i], self.labels[i]
-
-    def __len__(self):
-        return len(self.examples)
-
-    @classmethod
-    def build_dataset(cls, path, n_examples=None):
+    def build_dataset(cls, path, max_examples=None, all_nli=True):
         label2class = {"contradiction": 0, "entailment": 1, "neutral": 2}
         examples = []
         with open(path, 'r', encoding='utf8') as f:
-            if n_examples is not None:
+            lines = f.readlines()[1:]
+            iterator = tqdm(lines, total=len(lines))
+            if max_examples is not None:
                 examples_read = 0
-            for line in f:
+            print(f"Loading Dataset from {path}...")
+            for line in iterator:
+                if all_nli:
+                    split, _, _, sent1, sent2, label  = line.strip().split("\t")
+                    if split != "train":
+                        continue          
+                else:
+                    sent1, sent2, label  = line.strip().split("\t")
                 try:
-                    label, sent1, sent2  = line.strip().split("\t")
-                except ValueError:
+                    label = label2class[label]
+                except KeyError:
+                    print(f"Error for label: {label}")
                     continue
-                label = label2class[label]
                 example = EntailmentExample(sent1, sent2, label)
                 examples.append(example)
-                if n_examples is not None:
+                if max_examples is not None:
                     examples_read += 1
-                    if examples_read >= n_examples:
+                    if examples_read >= max_examples:
                         break 
         random.shuffle(examples)
         labels = [ex.get_label for ex in examples]
+        assert(len(labels)) == len(examples)
+        print(f"Number of examples: {len(examples)}")
         return cls(examples, labels)
+

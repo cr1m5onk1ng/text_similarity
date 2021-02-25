@@ -1,6 +1,8 @@
 from os import name
 import os
 
+import sentence_transformers
+
 from src.training.train import Trainer
 from src.models.modeling import BaseEncoderModel
 import numpy as np
@@ -12,11 +14,13 @@ from torch import nn
 from ..training.learner import Learner
 from ..dataset.dataset import DataLoader, Dataset, SmartParaphraseDataloader
 from ..models.losses import SimpleDistillationLoss
-from typing import Dict
+from typing import Dict, List
 import tqdm
 from torch.cuda import amp
 from queue import PriorityQueue
 from heapq import heappush, heappop
+from sentence_transformers import SentenceTransformer, models, losses, evaluation
+from sklearn.decomposition import PCA
 
 import logging
 
@@ -49,39 +53,46 @@ class Pruner(Learner):
         self.n_heads = n_heads
         self.n_dense = n_dense
         self.output_path = output_path
+        if isinstance(self.model, SentenceTransformer):
+            model = self.model._first_module().auto_model
+        elif isinstance(self.model, SiameseSentenceEmbedder):
+            model = self.model.context_embedder
+        else:
+            model = self.model
         self.inter_weights = torch.zeros(
-            self.model.context_embedder.config.num_hidden_layers, 
-            self.model.context_embedder.config.intermediate_size,
-            self.model.context_embedder.config.hidden_size).to(self.params.device)
+            model.config.num_hidden_layers, 
+            model.config.intermediate_size,
+            model.config.hidden_size).to(self.params.device)
         self.inter_biases = torch.zeros(
-            self.model.context_embedder.config.num_hidden_layers,
-            self.model.context_embedder.config.hidden_size).to(self.params.device)
+            model.config.num_hidden_layers,
+            model.config.hidden_size).to(self.params.device)
         self.output_weights = torch.zeros(
-            self.model.context_embedder.config.num_hidden_layers,
-            self.model.context_embedder.config.hidden_size,
-            self.model.context_embedder.config.intermediate_size).to(self.params.device)
+            model.config.num_hidden_layers,
+            model.config.hidden_size,
+            model.config.intermediate_size).to(self.params.device)
 
         #a list of all the layers of the transformer model
-        self.layers = self.model.context_embedder.base_model.encoder.layer
+        self.layers = model.base_model.encoder.layer
 
         self.head_importance = torch.zeros(
-            self.self.model.context_embedder.config.num_hidden_layers,
-            self.self.model.context_embedder.config.num_attention_heads).to(self.params.device)
+            self.model.config.num_hidden_layers,
+            self.model.config.num_attention_heads).to(self.params.device)
         self.ffn_importance = torch.zeros(
-            self.self.model.context_embedder.config.num_hidden_layers,
-            self.self.model.context_embedder.config.intermediate_size).to(self.params.device)
+            self.model.config.num_hidden_layers,
+            self.model.config.intermediate_size).to(self.params.device)
 
         # filling the weights with the original data
-        for layer_num in range(self.model.context_embedder.config.num_hidden_layers):
+        for layer_num in range(model.config.num_hidden_layers):
             self.inter_weights[layer_num] = self.layers._modules[str(layer_num)].intermediate.dense.weight.detach().to(params.device)
             self.inter_biases[layer_num] = self.layers._modules[str(layer_num)].intermediate.dense.bias.detach().to(params.device)
             self.output_weights[layer_num] = self.layers._modules[str(layer_num)].output.dense.weight.detach().to(params.device)
 
         #the parameters to optimize
         self.head_mask = torch.ones(
-            self.model.context_embedder.config.num_hidden_layers,
-            self.model.context_embedder.config.num_attention_heads, 
+            model.config.num_hidden_layers,
+            model.config.num_attention_heads, 
             requires_grad=True).to(self.params.device)
+
 
     def update_importance(self):
         for layer_num in range(self.model.context_edbedder.model.config.num_hidden_layers):
@@ -122,10 +133,10 @@ class Pruner(Learner):
     def rewire(self):
         head_importance = self.head_importance.cpu()
         ffn_importance = self.ffn_importance.cpu()
-        num_heads = self.self.model.context_embedder.config.num_attention_heads
-        head_size = self.self.model.context_embedder.config.hidden_size / num_heads
+        num_heads = self.model.config.num_attention_heads
+        head_size = self.model.config.hidden_size / num_heads
 
-        for layer_num in range(self.self.model.context_embedder.config.num_hidden_layers):
+        for layer_num in range(self.model.config.num_hidden_layers):
             query_weight = self.layers._modules()[str(layer_num)].attention.self.query.weight
             query_bias = self.layers._modules[str(layer_num)].attention.self.query.bias
             key_weight = self.layers._modules[str(layer_num)].attention.self.key.weight
@@ -196,9 +207,9 @@ class Pruner(Learner):
                 1)
             weight_sorted = weight_sorted.transpose(0, 1)
             self.layers._modules[str(layer_num)].output.dense.weight = torch.nn.Parameter(weight_sorted)
-        self.self.model.context_embedder.config.hidden_act = 'relu'
-        self.self.model.context_embedder.config.num_attention_heads = min([num_heads, self.n_heads])
-        self.self.model.context_embedder.config.intermediate_size = self.layers._modules['0'].intermediate.dense.weight.size(0)
+        self.model.config.hidden_act = 'relu'
+        self.model.config.num_attention_heads = min([num_heads, self.n_heads])
+        self.model.config.intermediate_size = self.layers._modules['0'].intermediate.dense.weight.size(0)
 
 
     def prune(self, data_loader):
@@ -267,8 +278,70 @@ class Pruner(Learner):
        
         return results
 
+class Distiller:
+    def __init__(
+        self, 
+        params,
+        student_model,
+        teacher_model, 
+        train_dataloader,
+        model_save_path,
+        *args,
+        **kwargs
+        ):
+        self.params = params
+        self.student_model = student_model
+        self.teacher_model = teacher_model
+        self.train_dataloader = train_dataloader
+        self.model_save_path = model_save_path
 
-class Distiller(Learner):
+
+class SentenceTransformersDistiller(Distiller):
+    def __init__(self, evaluators, *args, layers = (1, 4, 7, 10), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.evaluators = evaluators
+        self.layers = layers
+        model = self.student_model._first_module().auto_model
+        layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
+        model.encoder.layer = layers_to_keep
+        model.config.num_hidden_layers = len(layers)
+        self.student_model._first_module().auto_model = model
+        assert len(self.student_model._first_module().auto_model.layer) == len(args.layers)
+        self.loss = losses.MSELoss(model=self.student_model)
+
+    def distill(self, reduce_sentences=None):
+        logging.info("######## Starting model distillation ########")
+        if (self.student_model.get_sentence_embedding_dimension() < 
+            self.teacher_model.get_sentence_embedding_dimension()):
+            if reduce_sentences is not None:
+                self._reduce_dim(reduce_sentences)
+
+        self.student_model.fit(
+            train_objectives=[(self.train_dataloader, self.loss)],
+            evaluator=evaluation.SequentialEvaluator(
+                self.evaluators,
+                main_score_function=lambda scores: np.mean(scores)),
+                epochs=self.params.epochs,
+                warmup_steps = self.params.warmup_steps,
+                output_path=self.model_save_path,
+                save_best_model=True,
+                optimizer_params={'lr': 2e-5, 'eps': 1e-6, 'correct_bias': False},
+                use_amp=True
+        )
+
+    def _reduce_dim(self, sentences):
+        logging.info("Student model has fewer dimensions that the teacher. Compute PCA for down projection")
+        pca_embeddings = self.teacher_model.encode(sentences, convert_to_numpy=True)
+        pca = PCA(n_components=self.student_model.get_sentence_embedding_dimension())
+        pca.fit(pca_embeddings)
+
+        #Add Dense layer to teacher that projects the embeddings down to the student embedding size
+        dense = models.Dense(in_features=self.teacher_model.get_sentence_embedding_dimension(), out_features=self.student_model.get_sentence_embedding_dimension(), bias=False, activation_function=torch.nn.Identity())
+        dense.linear.weight = torch.nn.Parameter(torch.tensor(pca.components_))
+        self.teacher_model.add_module('dense', dense)
+        
+
+class SentenceEncoderDistiller(Learner):
     """
     Distiller module based on SBERT implementation
     """
@@ -285,14 +358,12 @@ class Distiller(Learner):
         self.teacher_model = teacher_model
         self.train_dataloader = train_dataloader
         self.model_save_path = model_save_path
-        if isinstance(self.model, SiameseSentenceEmbedder):
-            layers_to_keep = nn.ModuleList([l for i, l in enumerate(self.model.context_embedder.encoder.layer) if i in layers])
-            self.model.context_embedder.encoder.layer = layers_to_keep
-            self.model.context_embedder.config.num_hidden_layers = len(layers_to_keep)
-        else:
-            layers_to_keep = nn.ModuleList([l for i, l in enumerate(self.model.encoder.layer) if i in layers])
-            self.model.encoder.layer = layers_to_keep
-            self.model.config.num_hidden_layers = len(layers_to_keep)
+        model = self.model.context_embedder
+        layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
+        model.encoder.layer = layers_to_keep
+        model.config.num_hidden_layers = len(layers_to_keep)
+        self.model.context_embedder = model
+        
 
     def distill(self):
         logging.info(f"##### Making some fine liquor with model: {self.learner.config_name}#####")
@@ -303,112 +374,6 @@ class Distiller(Learner):
         return res["loss"]
 
 
-class FastformersDistiller:
-    """
-    Distiller module based on Fastformers implementation
-    """
-    def __init__(
-        self, 
-        params: Dict, 
-        student: nn.Module, 
-        teacher: nn.Module, 
-        dataset: Dataset, 
-        device: torch.device
-    ):
-        self.params = params
-        self.student = student
-        self.teacher = teacher
-        self.dataset = dataset
-        self.device = device
-
-        #TODO
-        self.student_learner = Learner(model = student)
-        self.teacher_learner = Learner(model = teacher)
-
-        # TODO 
-        self.dataloader = SmartParaphraseDataloader()
-
-        self.loss_fn = DistillationLoss(params)
-
-        self.temperature = params.temperature
-
-        assert self.temperature > 0.0
-
-        self.alpha_ce = params.alpha_ce
-        self.alpha_clm = params.alpha_clm
-        self.alpha_mse = params.alpha_mse
-        self.alpha_cos = params.alpha_cos
-
-        ### SKIPPING MLM loss for LM step
-
-    def distill_train(self):
-        losses = AverageMeter(name="loss")
-        iterator = tqdm(self.dataloader, total=len(self.dataloader))
-        self.student.to(self.device)
-        self.teacher.to(self.device)
-        self.student.train()
-        self.teacher.eval()
-        for _ in range(self.params.epochs):
-            for b_idx, data in enumerate(iterator):
-                #### TRAINING STEP ####
-                data.to_device(self.device)
-                if self.accumulation_steps == 1 and b_idx == 0:
-                    self.optimizer.zero_grad()
-                if self.fp16:
-                    with amp.autocast():
-                        student_output = self.student(data)
-                        student_logits = student_output.predictions
-                        with torch.no_grad():
-                            teacher_output = self.teacher(data)
-                            teacher_logits = teacher_output.logits
-                else:
-                    student_output = self.student(data)
-                    student_logits = student_output.predictions
-                    with torch.no_grad():
-                            teacher_output = self.teacher(data)
-                            teacher_logits = teacher_output.logits
-
-                labels = data.labels
-                mask = data.attention_mask.unsqueeze(-1).expand_as(student_logits)
-
-                #TODO
-                loss = self.loss_fn(student_logits, teacher_logits, data.features)
-
-                losses.update(loss.item(), self.dataloader.get_batch_size)
-
-                self.optimization_step(loss.loss, b_idx)
-                
-                iterator.set_postfix(loss=loss.avg)
-            iterator.close()
-        results = {"loss": losses.avg}
-        return results
-
-    def optimization_step(self, loss, b_idx):
-        skip_scheduler = False
-        if self.fp16:
-            scale_before_step = self.scaler.get_scale()
-            if self.max_grad_norm is not None:
-                self.scaler.unscale_(self.optimizer)
-                if self.fp16:
-                    torch.nn.utils.clip_grad_norm_(amp.master_params(self.optimizer), self.max_grad_norm)
-                else:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            if (b_idx + 1) % self.accumulation_steps == 0:
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            skip_scheduler = self.scaler.get_scale() != scale_before_step
-        else:
-            loss.backward()
-            if self.max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            if (b_idx + 1) % self.accumulation_steps == 0:
-                self.optimizer.step()
-        if b_idx > 0:
-            self.optimizer.zero_grad()
-            
-        if self.scheduler is not None:
-            if not skip_scheduler:
-                self.scheduler.step()
 
 
     

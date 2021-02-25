@@ -26,7 +26,7 @@ class SoftmaxLoss(Loss):
         labels = features.labels 
         logits = self.classifier(hidden_state)
         loss = self.loss_function(
-            logits.view(-1, self.params.num_classes), 
+            logits, 
             labels.view(-1)
         )
         return ClassifierOutput(
@@ -90,10 +90,10 @@ class CosineSimilarityLoss(SimilarityLoss):
 
     def forward(self, embeddings, features):
         scores = self.similarity(embeddings[0], embeddings[1])
-        loss = self.loss_function(scores, features.labels)
-        return SimilarityOutput(
+        loss = self.loss_function(scores, features.labels.view(-1))
+        return ClassifierOutput(
             loss = loss,
-            scores = scores
+            predictions = embeddings
         )
 
 
@@ -116,11 +116,13 @@ class SimpleDistillationLoss(Loss):
 
 
 # TODO PENSARE A COME IMPLEMENTARE ATTENTION DISTILLATION SU SBERT
-class AttentionDistillationLoss(Loss):
+class TinyBertDistillationloss(Loss):
     def __init__(self, teacher, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.teacher = teacher
-        self.loss = nn.MSELoss()
+        self.loss_mse = nn.MSELoss()
+        self.loss_cs = CosineSimilarity(dim=2)
+        self.loss_cs_att = CosineSimilarity(dim=3)
 
     def forward(self, student_embeddings, features):
         ### TODO DEFINE features.src in the DATALOADER
@@ -129,6 +131,11 @@ class AttentionDistillationLoss(Loss):
         output_teacher = self.teacher.encode(features.src)
         loss = self.loss(output_teacher, student_embeddings)
         return ModelOutput(loss=loss)
+
+    def soft_cross_entropy(self, predicts, targets):
+        student_likelihood = torch.nn.functional.log_softmax(predicts, dim=-1)
+        targets_prob = torch.nn.functional.softmax(targets, dim=-1)
+        return (- targets_prob * student_likelihood).sum(dim=-1).mean()
 
 
 class FastDistillationLoss(Loss):

@@ -7,8 +7,8 @@ from typing import Dict, Tuple, List, Union
 @dataclass
 class ModelParameters:
     model_name: str
-    hidden_size: int
-    num_classes: int
+    hidden_size: int = 768
+    num_classes: int = 2
     use_pretrained_embeddings: bool = False
     freeze_weights: bool = True
     output_attention = False
@@ -25,17 +25,22 @@ class Configuration:
     model_parameters: Union[ModelParameters, None]
     model: str
     save_path: str
-    sequence_max_len: int
-    dropout_prob: float
-    lr: float
-    batch_size: int
-    epochs: int
-    device: torch.device
-    embedding_map: Dict[str, torch.Tensor]
-    bnids_map: Dict[str, torch.Tensor]
     tokenizer: transformers.AutoTokenizer
-    pretrained_embeddings_dim: int
-    senses_as_features: bool
+    sequence_max_len: int = 256
+    dropout_prob: float = 0.1
+    lr: float = 2e-5
+    batch_size: int = 16
+    epochs: int = 1
+    device: torch.device = torch.device("cuda")
+    warmup_steps: int = 0
+
+
+@dataclass
+class WordModelConfiguration(Configuration):
+    embedding_map: Dict[str, torch.Tensor] = None
+    bnids_map: Dict[str, torch.Tensor] = None
+    pretrained_embeddings_dim: int = 768
+    senses_as_features: bool = False
 
 
 def load_file(path):
@@ -72,7 +77,7 @@ DIMENSIONS_MAP = {
 }
 
 
-CONFIG = Configuration(
+CONFIG = WordModelConfiguration(
     model_parameters = None,
     model = MODELS["large"],
     save_path = "../models",
@@ -86,7 +91,6 @@ CONFIG = Configuration(
     bnids_map = load_file("../data/bnids_map"),
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODELS["large"]),
     pretrained_embeddings_dim = DIMENSIONS_MAP["ares_mono"],
-    senses_as_features = True
 )
 
 

@@ -39,7 +39,7 @@ class Learner:
         fp16: bool = True,
         max_grad_norm: int = 1,
         use_mean_loss: bool = False,
-        metrics: Union[List[AverageMeter], None] = None,
+        metrics: Union[Dict[str, List[AverageMeter]], None] = None,
         verbose: bool = True,
         eval_in_train: bool = False
     ):
@@ -97,15 +97,13 @@ class Learner:
         d = {}
 
         if hasattr(self.model, 'context_embedder'):
-            d['embedder_state_dict'] = self.model.context_embedder.state_dict()
-        if hasattr(self.model, 'pooler'):
-            d['pooler_state_dict'] = self.model.pooler.state_dict()
-        if not hasattr(self.model, "context_embedder") and not hasattr(self.model, "pooler"):
-            d['model_state_dict'] = self.model.state_dict()
+            self.model.context_embedder.save_pretrained(path)
+        if not hasattr(self.model, "context_embedder"):
+            self.model.save_pretrained(path)
 
         d['optimizer_state_dict'] = self.optimizer.state_dict()
 
-        torch.save(d, os.path.join(path, f"{self.config_name}.bin"))
+        torch.save(d, os.path.join(path, f"{self.config_name}_optimizer_state.bin"))
 
         #Saving parameters
         torch.save(self.params, os.path.join(path, "training_params.bin"))

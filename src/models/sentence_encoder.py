@@ -1,13 +1,17 @@
 import torch
 from torch import nn
+from transformers.configuration_auto import AutoConfig
 from src.configurations import config as config
 from .modeling import BaseEncoderModel
 from .losses import *
 from src.modules.pooling import *
 from src.dataset.dataset import *
 from typing import Union, Dict, List
+from transformers import AutoModel
 import numpy
-
+from tqdm import tqdm
+import os
+import json
 
 class SiameseSentenceEmbedder(BaseEncoderModel):
     def __init__(
@@ -57,23 +61,23 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
 
         return self.loss(merged, features)
 
-    def encode(self, features: DataLoaderFeatures, **kwargs) -> torch.Tensor:
-        self.eval()
+    def encode(self, features: Union[DataLoaderFeatures, EmbeddingsFeatures], **kwargs) -> torch.Tensor:
         with torch.no_grad():
-            embed = self.embedder(**features.embeddings_features.to_dict())[0]
-            pooled = self.pooler(embed, features.embeddings_features)
+            embed = self.context_embedder(**features.to_dict())[0]
+            pooled = self.pooler(embed, features)
         return pooled
 
-    def encode_text(self, documents: List[str], output_numpy: bool=False) -> Union[torch.Tensor, numpy.array]:
+    def encode_text(self, documents: List[str], output_numpy: bool=False, eval_mode=F) -> Union[torch.Tensor, numpy.array]:
         self.to(self.params.device)
         documents = sorted(documents, key=lambda x: len(x))
         encoded_documents = []
+        self.eval()
         while len(documents) > 0:
             to_take = min(self.params.batch_size, len(documents))
             select = random.randint(0, len(documents)-to_take)
             batch = documents[select:select+to_take]   
             encoded_dict = self.params.tokenizer(
-                    text=documents,
+                    text=batch,
                     add_special_tokens=True,
                     padding='longest',
                     truncation=True,
@@ -91,7 +95,7 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
                 token_type_ids=token_type_ids
             )
             embeddings = self.encode(features)
-            embeddings = embeddings * attention_mask.unsqueeze(-1).expand(embeddings.size()).float()
+            #embeddings = embeddings * attention_mask.unsqueeze(-1).expand(embeddings.size()).float()
             embeddings = embeddings.detach()
 
             if output_numpy:
@@ -105,10 +109,10 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
             encoded_documents = numpy.asarray([embedding.numpy() for embedding in encoded_documents])
             return encoded_documents
         return torch.stack(encoded_documents)
-        
 
     def set_hidden_size(self):
         embedder_size = self.context_embedder.config.hidden_size
+        """
         pretrained_size = self.params.pretrained_embeddings_dim
         hidden_size = embedder_size * 3
         if self.params.model_parameters.use_pretrained_embeddings:
@@ -116,9 +120,9 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
                 hidden_size = (embedder_size + pretrained_size) * 2
             else:
                 hidden_size = embedder_size + pretrained_size
-        self.params.model_parameters.hidden_size = hidden_size
+        """
+        self.params.model_parameters.hidden_size = embedder_size*3
 
     def load_pretrained(self, path):
-        checkpoint = torch.load(path)
-        self.context_embedder.load_state_dict(checkpoint["embedder_state_dict"], strict=True)
-        self.pooler.load_state_dict(checkpoint['pooler_state_dict'], strict=True)
+        config = AutoConfig.from_pretrained(path)
+        self.context_embedder = AutoModel.from_pretrained(path, config=config)

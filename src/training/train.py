@@ -25,7 +25,7 @@ class Trainer:
         train_dataloader: DataLoader, 
         valid_dataloader: DataLoader, 
         epochs: int, 
-        configuration: Learner, 
+        configuration: Learner,
         measure: str = "loss", 
         direction: str = "minimize", 
         verbose: bool = True, 

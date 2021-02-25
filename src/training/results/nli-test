@@ -1,0 +1,8 @@
+ ------- Running training for model: nli-test with config: nli-test -------- 
+
+Params: batch size: 16; number of epochs: 1; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 2304; lr: 2e-05; merge strategy: SentenceBertCombineStrategy()
+training > epoch: 1; loss: 1.115616066115243; accuracy: 0.25; 
+validation > epoch: 1; loss: 1.0999400275094169; accuracy: 0.3482142857142857; 
+
+

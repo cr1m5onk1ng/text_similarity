@@ -1,0 +1,14 @@
+ ------- Running training for model: test-sts with config: test-sts -------- 
+
+Params: batch size: 16; number of epochs: 4; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 2304; lr: 2e-05; merge strategy: EmbeddingsSimilarityCombineStrategy()
+training > epoch: 1; loss: 0.05882944317224125; embed_sim: 0.6719023734369307; 
+validation > epoch: 1; loss: 0.03608116481838555; embed_sim: 0.7962194707267958; 
+training > epoch: 2; loss: 0.017537952217066454; embed_sim: 0.8480185486443867; 
+validation > epoch: 2; loss: 0.03412280408344392; embed_sim: 0.8036243862256423; 
+training > epoch: 3; loss: 0.010338955371278442; embed_sim: 0.9082264829518365; 
+validation > epoch: 3; loss: 0.032256285884770856; embed_sim: 0.8115229474589104; 
+training > epoch: 4; loss: 0.007602364954072982; embed_sim: 0.9269944500160535; 
+validation > epoch: 4; loss: 0.03171796217860504; embed_sim: 0.8167293839671639; 
+
+

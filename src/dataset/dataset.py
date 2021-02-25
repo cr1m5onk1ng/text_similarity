@@ -9,6 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Union, List, Dict
 import random
+from tqdm import tqdm
 
 
 class KFoldStratifier:
@@ -69,8 +70,9 @@ class ParaphraseExample():
 
 
 class DocumentCorpusExample():
-    def __init__(self, text, id):
-        self.text = text
+    def __init__(self, document: str, sentences: List[str], id: int):
+        self.document = document
+        self.sentences = sentences
         self.id = id
 
 
@@ -108,15 +110,35 @@ class Dataset():
 
 
 class DocumentCorpusDataset:
-    def __init__(self, positive_examples, negative_examples):
-        self.positive_examples = positive_examples
-        self.negative_examples = negative_examples
+    def __init__(self, documents: List[DocumentCorpusExample]):
+        self.documents = documents
 
     def __getitem__(self, i):
-        return self.positive_examples[i], self.negative_examples[i]
+        return self.documents[i]
 
     def __len__(self):
-        return len(self.positive_examples) + len(self.negative_examples)
+        return len(self.documents)
+
+    @property
+    def sentences(self):
+        for doc in self.documents:
+            for sent in doc.sentences:
+                yield sent
+
+    @classmethod
+    def from_tsv(cls, path):
+        print("Parsing corpus. this may take a while")
+        documents = []
+        with open(path, 'r', encoding='utf8') as f:
+            lines = f.readlines()
+            iterator = tqdm(lines, total=len(lines))
+            for i, line in enumerate(iterator):
+                parts = line.split("\t")
+                document = parts[0]
+                sentences = parts[1:]
+                documents.append(DocumentCorpusExample(document, sentences, i))
+        print("Parsing complete!")
+        return cls(documents)
 
 
 class ParaphraseDataset(Dataset):
@@ -385,7 +407,7 @@ class SmartParaphraseDataloader(DataLoader):
         super().__init__(*args, **kwargs)
 
     @classmethod
-    def build_batches(cls, dataset, batch_size, sentence_pairs=False, mode='standard'):
+    def build_batches(cls, dataset, batch_size, config, sentence_pairs=False, mode='standard'):
         assert mode in ["sense_retrieval", "standard", "parallel_data", "tatoeba"]
         if mode == "parallel_data":
             key = lambda x: len(x[0].get_src_example.get_sent1.strip().split(" ") + x[0].get_src_example.get_sent2.strip().split(" "))
@@ -401,7 +423,7 @@ class SmartParaphraseDataloader(DataLoader):
         if mode == "standard":
             key = lambda x: max(len(x[0].get_sent1.strip().split(" ")), len(x[0].get_sent2.strip().split(" ")))
             dataset = sorted(dataset, key=key)
-            batches = SmartParaphraseDataloader.smart_batching_standard(dataset, batch_size, sentence_pairs=sentence_pairs)
+            batches = SmartParaphraseDataloader.smart_batching_standard(dataset, batch_size, config=config, sentence_pairs=sentence_pairs)
         if mode == "tatoeba":
             key = lambda x: len(x[0].strip().split(" ") + x[1].strip().split(" "))
             dataset = sorted(dataset, key=key)
@@ -589,7 +611,7 @@ class SmartParaphraseDataloader(DataLoader):
         return batches
     
     @staticmethod
-    def smart_batching_standard(sorted_dataset, batch_size, sentence_pairs=False):
+    def smart_batching_standard(sorted_dataset, batch_size, config, sentence_pairs=False):
         batches = []
         dataset = sorted_dataset
         while len(dataset) > 0:
@@ -616,26 +638,26 @@ class SmartParaphraseDataloader(DataLoader):
 
             del dataset[select:select+to_take]
 
-            batch_labels = torch.LongTensor(b_labels)
+            batch_labels = torch.tensor(b_labels)
 
             if not sentence_pairs:
-                encoded_dict_1 = config.CONFIG.tokenizer(
+                encoded_dict_1 = config.tokenizer(
                     text=sentences_1,
                     add_special_tokens=True,
                     padding='longest',
                     truncation=True,
-                    max_length=config.CONFIG.sequence_max_len,
+                    max_length=config.sequence_max_len,
                     return_attention_mask=True,
                     return_token_type_ids=True,
                     return_tensors='pt'
                 )
 
-                encoded_dict_2 = config.CONFIG.tokenizer(
+                encoded_dict_2 = config.tokenizer(
                     text=sentences_2,
                     add_special_tokens=True,
                     padding='longest',
                     truncation=True,
-                    max_length=config.CONFIG.sequence_max_len,
+                    max_length=config.sequence_max_len,
                     return_attention_mask=True,
                     return_token_type_ids=True,
                     return_tensors='pt'
@@ -652,12 +674,12 @@ class SmartParaphraseDataloader(DataLoader):
                 )
 
             else:
-                encoded_dict = config.CONFIG.tokenizer(
+                encoded_dict = config.tokenizer(
                 text=sent_pairs,
                 add_special_tokens=True,
                 padding='longest',
                 truncation=True,
-                max_length=config.CONFIG.sequence_max_len,
+                max_length=config.sequence_max_len,
                 return_attention_mask=True,
                 return_token_type_ids=True,
                 return_tensors='pt'
