@@ -179,9 +179,11 @@ class EmbeddingsPooler(Pooler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def forward(self, embeddings: torch.Tensor, features: EmbeddingsFeatures, **kwargs):
+    def forward(self, embeddings: torch.Tensor, features: EmbeddingsFeatures, attention: torch.Tensor=None, **kwargs):
         pooled = self.pooling_strategy(embeddings, features, **kwargs)
         if self.normalize:
             pooled = F.normalize(pooled, dim=-1, p=2)
+        if attention is not None:
+            return pooled, attention
         return pooled  
 

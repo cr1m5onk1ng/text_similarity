@@ -26,7 +26,7 @@ if __name__ == "__main__":
     parser.add_argument('--bs', type=int, dest="batch_size", default=16)
     parser.add_argument('--train_path', dest="train_path", type=str, default="../data/sts/stsbenchmark.tsv")
     parser.add_argument('--valid_path', dest="valid_path", type=str, default="../data/sts/stsbenchmark.tsv")
-    parser.add_argument('--save_path', dest="save_path", type=str, default="../models/trained_models")
+    parser.add_argument('--save_path', dest="save_path", type=str, default="./trained_models")
     parser.add_argument('--pretrained_path', dest="pretrained_path", type=str, default="../training/trained_models/sencoder-bert-nli/")
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
     parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
@@ -71,7 +71,7 @@ if __name__ == "__main__":
     )
 
     train_dataset = StsDataset.build_dataset(args.train_path, mode="train")
-    valid_dataset = StsDataset.build_dataset(args.valid_path, mode="test")
+    valid_dataset = StsDataset.build_dataset(args.valid_path, mode="dev")
     print("Building batches. This may take a while.")
     train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="standard", config=configuration)
     valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="standard", config=configuration)

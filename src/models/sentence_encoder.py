@@ -1,3 +1,4 @@
+from src.utils.utils import load_file
 import torch
 from torch import nn
 from transformers.configuration_auto import AutoConfig
@@ -7,6 +8,7 @@ from .losses import *
 from src.modules.pooling import *
 from src.dataset.dataset import *
 from typing import Union, Dict, List
+import transformers
 from transformers import AutoModel
 import numpy
 from tqdm import tqdm
@@ -18,15 +20,17 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
         self, 
         pooler: Pooler,
         pooling_strategy: PoolingStrategy, 
-        merge_strategy: MergingStrategy,
-        loss: Loss,
         *args,
+        merge_strategy: MergingStrategy=None,
+        loss: Loss=None,
         **kwargs
         ):
         super().__init__(*args, **kwargs)
         self.set_hidden_size()
-        self.loss = loss(self.params.model_parameters)
-        self.merge_strategy = merge_strategy()
+        if loss is not None:
+            self.loss = loss(self.params.model_parameters)
+        if merge_strategy is not None:
+            self.merge_strategy = merge_strategy()
         if self.params.model_parameters.use_pretrained_embeddings:
             self.pooling_strategy = SiameseSensePoolingStrategy(
                 return_combined=self.params.senses_as_features   
@@ -41,30 +45,24 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
      
     def forward(self, features: DataLoaderFeatures, head_mask=None):
         #weights are shared, so we call only one model for both sentences
-        if isinstance(features, SiameseDataLoaderFeatures):
-            embed_1 = self.context_embedder(
-                **features.sentence_1_features.to_dict(), 
-                head_mask=head_mask)[0]
-            embed_2 = self.context_embedder(
-                **features.sentence_2_features.to_dict(), 
-                head_mask=head_mask)[0]
-
-            pooled_1 = self.pooler(embed_1, features.sentence_1_features)
-            pooled_2 = self.pooler(embed_2, features.sentence_2_features)
-            merged = self.merge_strategy(features, pooled_1, pooled_2)
-        else:
-            embed = self.context_embedder(
-                **features.embeddings_features.to_dict(), 
-                head_mask=head_mask)[0]
-            pooled = self.pooler(embed, features.embeddings_features)
-            merged = self.merge_strategy(features, pooled)
+        embed_1 = self.context_embedder(
+            **features.sentence_1_features.to_dict(), 
+            head_mask=head_mask)[0]
+        embed_2 = self.context_embedder(
+            **features.sentence_2_features.to_dict(), 
+            head_mask=head_mask)[0]
+        pooled_1 = self.pooler(embed_1, features.sentence_1_features)
+        pooled_2 = self.pooler(embed_2, features.sentence_2_features)
+        merged = self.merge_strategy(features, pooled_1, pooled_2)
 
         return self.loss(merged, features)
 
-    def encode(self, features: Union[DataLoaderFeatures, EmbeddingsFeatures], **kwargs) -> torch.Tensor:
-        with torch.no_grad():
-            embed = self.context_embedder(**features.to_dict())[0]
-            pooled = self.pooler(embed, features)
+    def encode(self, features: Union[DataLoaderFeatures, EmbeddingsFeatures], output_attention=False, head_mask=None, **kwargs) -> torch.Tensor:
+        output = self.context_embedder(input_ids=features["input_ids"], attention_mask=features["attention_mask"], output_attentions=output_attention, output_hidden_states=output_attention, head_mask=head_mask)
+        embed = output[0]
+        pooled = self.pooler(embed, features).to(self.params.device)
+        if output_attention:
+            return pooled, output
         return pooled
 
     def encode_text(self, documents: List[str], output_numpy: bool=False, eval_mode=F) -> Union[torch.Tensor, numpy.array]:
@@ -94,8 +92,8 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
                 attention_mask=attention_mask, 
                 token_type_ids=token_type_ids
             )
-            embeddings = self.encode(features)
-            #embeddings = embeddings * attention_mask.unsqueeze(-1).expand(embeddings.size()).float()
+            with torch.no_grad():
+                embeddings = self.encode(features)
             embeddings = embeddings.detach()
 
             if output_numpy:
@@ -126,3 +124,24 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
     def load_pretrained(self, path):
         config = AutoConfig.from_pretrained(path)
         self.context_embedder = AutoModel.from_pretrained(path, config=config)
+
+    def save_model(self, path):
+        assert(path is not None)
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+        d = {}
+        self.context_embedder.save_pretrained(path)
+
+    @classmethod
+    def from_pretrained(cls, path, params=None):
+        config = AutoConfig.from_pretrained(path)
+        context_embedder = AutoModel.from_pretrained(path, config=config)
+        if params is None:
+            params = torch.load(os.path.join(path, "training_params.bin"))
+        return cls(
+            params = params,
+            context_embedder=context_embedder,
+            pooling_strategy = AvgPoolingStrategy,
+            pooler = EmbeddingsPooler,
+        )
+      

@@ -1,4 +1,4 @@
-from src.dataset.dataset import ParaphraseDataset, ParaphraseExample
+from src.dataset.dataset import Dataset, ParaphraseExample
 from tqdm import tqdm
 import random
 import csv
@@ -12,7 +12,7 @@ class StsExample(ParaphraseExample):
     def get_label(self):
         return self.label
 
-class StsDataset(ParaphraseDataset):
+class StsDataset(Dataset):
     def __init__(self, examples, labels, *args, **kwargs):
         super().__init__(examples, labels, *args, **kwargs)
 
@@ -45,3 +45,19 @@ class StsDataset(ParaphraseDataset):
         assert(len(labels)) == len(examples)
         print(f"Number of examples: {len(examples)}")
         return cls(examples, labels)
+
+    @classmethod
+    def build_multilingual(cls, paths):
+        examples = []
+        for path in paths:
+            with open(path, "r", encoding="utf8") as f:
+                for line in f:
+                    tgt_sentence, src_sentence, score = line.strip().split("\t")
+                    score = float(score) / 5.0
+                    examples.append(StsExample(src_sentence, tgt_sentence, score))
+        random.shuffle(examples)
+        labels = [ex.get_label for ex in examples]
+        print(f"Number of examples: {len(examples)}")
+        return cls(examples, labels)
+
+        

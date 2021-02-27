@@ -39,8 +39,8 @@ class KFoldStratifier:
                 test_examples.append(dataset.get_examples[test_index])
                 train_labels.append(dataset.get_labels[test_index])
                 test_labels.append(dataset.get_labels[test_index])
-            train_split = ParaphraseDataset(train_examples, train_labels)
-            test_split = ParaphraseDataset(test_examples, test_labels)
+            train_split = Dataset(train_examples, train_labels)
+            test_split = Dataset(test_examples, test_labels)
             train_splits.append(train_split)
             test_splits.append(test_split)
         return cls(train_splits, test_splits)
@@ -74,20 +74,6 @@ class DocumentCorpusExample():
         self.document = document
         self.sentences = sentences
         self.id = id
-
-
-class ParallelExample():
-    def __init__(self, src_lang_example, tgt_lang_example):
-        self.src_lang_example = src_lang_example
-        self.tgt_lang_example = tgt_lang_example
-
-    @property
-    def get_src_lang_example(self):
-        return self.src_lang_example
-
-    @property
-    def get_tgt_lang_example(self):
-        return self.tgt_lang_example
 
 
 class Dataset():
@@ -141,60 +127,6 @@ class DocumentCorpusDataset:
         return cls(documents)
 
 
-class ParaphraseDataset(Dataset):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-    
-    @classmethod
-    def build_mulilingual(cls, paths):
-        examples = []
-        for path in paths:
-            with open(path) as f:
-                next(f)
-                for line in f:
-                    parts = line.split('\t')
-                    id, sent1, sent2, label = parts
-                    label = int(label)
-                    examples.append(PawsExample(id, sent1, sent2, label))
-        random.shuffle(examples)
-        labels = [ex.get_label for ex in examples]
-            
-        return cls(examples, labels)
-
-import gzip
-class ParallelDataset():
-    def __init__(self, src_sentences, tgt_sentences):
-        self.src_sentences = src_sentences
-        self.tgt_sentences = tgt_sentences
-
-    def __getitem__(self, i):
-        return self.src_sentences[i], self.tgt_sentences[i]
-
-    def __len__(self):
-        return len(self.src_sentences)
-
-    @property
-    def get_tgt_sentences(self):
-        return self.tgt_sentences
-
-    @property
-    def get_src_sentences(self):
-        return self.src_sentences
-
-    @classmethod
-    def build_dataset(cls, filepaths):
-        src_sentences = []
-        trg_sentences = []
-        for filepath in filepaths:
-            with gzip.open(filepath, 'rt', encoding='utf8') if filepath.endswith('.gz') else open(filepath, 'r', encoding='utf8') as f:
-                for line in f:
-                    splits = line.strip().split('\t')
-                    if len(splits) == 2:
-                        src_sentences.append(splits[0])
-                        trg_sentences.append(splits[1])
-        return cls(src_sentences, trg_sentences)
-
-
 class ParallelParaphraseDataset():
     def __init__(self, **datasets):
         self.datasets = OrderedDict(datasets)
@@ -222,7 +154,7 @@ class ParaphraseProcessor():
         """ returns an instance of ParaphraseDatasat containing a list of examples"""
         examples = self.get_examples(examples_path)
         labels = self.get_labels(labels_path)
-        return ParaphraseDataset(examples, labels)
+        return Dataset(examples, labels)
 
     def build_document_dataset_from_paws(path):
         positive_examples = []
@@ -241,47 +173,32 @@ class ParaphraseProcessor():
         return DocumentCorpusDataset(positive_examples, negative_examples)
 
 
-class ParallelProcessor(ParaphraseProcessor):
-    def __init__(self):
-        super().__init__()
-    
+class EmbeddingsFeatures(dict):
 
-    def get_examples(self, src_path):
-        labels = []
+    def __init__(self, input_ids, token_type_ids, attention_mask, *args, **kwargs):
+        super(EmbeddingsFeatures, self).__init__(*args, **kwargs)
+        self.input_ids = input_ids
+        self.token_type_ids = token_type_ids
+        self.attention_mask = attention_mask
 
-        src_examples = []
-        with open(src_path) as f:
-            next(f)
-            for line in f:
-                #line = utils.remove_unnecessary_spaces(line)
-                parts = line.split('\t')
-                id, sent1, sent2, label = parts
-                src_examples.append(PawsExample(id, sent1, sent2))
-                labels.append(label)
-        
-        return ParaphraseDataset(src_examples, labels)
+    def __getitem__(self, key):
+        return getattr(self, key)
 
+    def __contains__(self, key: str) -> bool:
+        if hasattr(self, key):
+            return True
+        return False
 
-    def build_dataset(self, paths, langs):
-        datasets = {}
-        for path, lang in zip(paths, langs):
-            dataset = self.get_examples(path)
-            datasets[lang] = dataset
-
-        return ParallelParaphraseDataset(**datasets)
-
-
-@dataclass
-class EmbeddingsFeatures:
-    input_ids: torch.Tensor
-    token_type_ids: torch.Tensor
-    attention_mask: torch.Tensor
 
     @classmethod
     def from_dict(cls, dictionary, *args, **kwargs):
+        if "token_type_ids" in dictionary:
+            token_ids = dictionary["token_type_ids"]
+        else:
+            token_ids = None
         return cls(
             dictionary["input_ids"],
-            dictionary["token_type_ids"],
+            token_ids,
             dictionary["attention_mask"],
             *args, 
             **kwargs
@@ -296,7 +213,8 @@ class EmbeddingsFeatures:
 
     def to_device(self, device):
         self.input_ids = self.input_ids.to(device)
-        self.token_type_ids = self.token_type_ids.to(device)
+        if self.token_type_ids is not None:
+            self.token_type_ids = self.token_type_ids.to(device)
         self.attention_mask = self.attention_mask.to(device)
 
 
@@ -352,14 +270,14 @@ class SiameseDataLoaderFeatures(DataFeatures):
 
 
 @dataclass
-class ParallelDataLoaderFeatures(DataFeatures):
-    src_sentence_features: SiameseDataLoaderFeatures
-    tgt_sentence_features: SiameseDataLoaderFeatures
+class ParallelDataLoaderFeatures:
+    sentence_1_features: EmbeddingsFeatures
+    sentence_2_features: EmbeddingsFeatures
+    src_sentences: List[str] = None
 
     def to_device(self, device):
-        super().to_device(device)
-        self.src_sentence_features.to_device(device)
-        self.tgt_sentence_features.to_device(device)
+        self.sentence_1_features.to_device(device)
+        self.sentence_2_features.to_device(device)
 
 
 class DataLoader:
@@ -407,12 +325,12 @@ class SmartParaphraseDataloader(DataLoader):
         super().__init__(*args, **kwargs)
 
     @classmethod
-    def build_batches(cls, dataset, batch_size, config, sentence_pairs=False, mode='standard'):
-        assert mode in ["sense_retrieval", "standard", "parallel_data", "tatoeba"]
-        if mode == "parallel_data":
-            key = lambda x: len(x[0].get_src_example.get_sent1.strip().split(" ") + x[0].get_src_example.get_sent2.strip().split(" "))
+    def build_batches(cls, dataset, batch_size, config, sentence_pairs=False, mode='standard', sbert_format=False):
+        assert mode in ["sense_retrieval", "standard", "parallel", "tatoeba"]
+        if mode == "parallel":
+            key = lambda x: max(len(x.get_sent1.strip().split(" ")), len(x.get_sent2.strip().split(" ")))
             dataset = sorted(dataset, key=key)
-            batches = SmartParaphraseDataloader.smart_batching_sense(dataset, batch_size, parallel_data=True)
+            batches = SmartParaphraseDataloader.smart_batching_parallel(dataset, batch_size, config=config, sbert_format=sbert_format)
         if mode == "sense_retrieval":
             key = lambda x: max(len(x[0].get_sent1.strip().split(" ")), len(x[0].get_sent2.strip().split(" ")))
             dataset = sorted(dataset, key=key)
@@ -696,7 +614,7 @@ class SmartParaphraseDataloader(DataLoader):
         return batches
     
     @staticmethod
-    def smart_batching_parallel(sorted_dataset, batch_size):
+    def smart_batching_parallel(sorted_dataset, batch_size, config, sbert_format=False):
         batches = []
         dataset = sorted_dataset
         for i in range(0, len(dataset), batch_size):
@@ -704,205 +622,42 @@ class SmartParaphraseDataloader(DataLoader):
             
             src_sentences = []
             tgt_sentences = []
-            sent_pairs = []
-            for src_sentence, tgt_sentence in batch:
-                src_sentences.append(src_sentence)
-                tgt_sentences.append(tgt_sentence)
+            for example in batch:
+                src_sentences.append(example.get_sent1)
+                tgt_sentences.append(example.get_sent2)
             
-            encoded_dict_1 = config.TOKENIZER(
+         
+            encoded_dict_1 = config.tokenizer(
                 text=src_sentences,
                 add_special_tokens=True,
                 padding='longest',
                 truncation=True,
-                max_length=config.SEQUENCE_MAX_LENGTH,
+                max_length=config.sequence_max_len,
                 return_attention_mask=True,
-                return_token_type_ids=True,
+                #return_token_type_ids=True,
                 return_tensors='pt'
             )
 
-            encoded_dict_2 = config.TOKENIZER(
+            encoded_dict_2 = config.tokenizer_student(
                 text=tgt_sentences,
                 add_special_tokens=True,
                 padding='longest',
                 truncation=True,
-                max_length=config.SEQUENCE_MAX_LENGTH,
+                max_length=config.sequence_max_len,
                 return_attention_mask=True,
-                return_token_type_ids=True,
+                #return_token_type_ids=True,
                 return_tensors='pt'
             )
 
-            sent1_features = {
-                "input_ids": encoded_dict_1["input_ids"].to(config.DEVICE),
-                "token_type_ids": encoded_dict_1["token_type_ids"].to(config.DEVICE),
-                "attention_mask": encoded_dict_1["attention_mask"].to(config.DEVICE)
-            }
+            
+            sent_1_features = EmbeddingsFeatures.from_dict(encoded_dict_1)
+            sent_2_features = EmbeddingsFeatures.from_dict(encoded_dict_2)
 
-            sent2_features = {
-                "input_ids": encoded_dict_2["input_ids"].to(config.DEVICE),
-                "token_type_ids": encoded_dict_2["token_type_ids"].to(config.DEVICE),
-                "attention_mask": encoded_dict_2["attention_mask"].to(config.DEVICE)
-            }
-    
-            d = {
-                "sentence_1_features": sent1_features,
-                "sentence_2_features": sent2_features,
-                "sentences_1": src_sentences,
-                "sentences_2": tgt_sentences
-            }
-
+            d = ParallelDataLoaderFeatures(
+                sentence_1_features = sent_1_features,
+                sentence_2_features = sent_2_features,
+                src_sentences=src_sentences if sbert_format else None
+            )
             batches.append(d)
 
         return batches
-
-
-
-
-
-
-if __name__ == "__main__":
-    """
-    processor = PawsProcessor()
-    train_paths = ["../data/paws/train.tsv", "../data/paws/train.tsv"]
-    valid_pathts = ["../data/paws/test.tsv", "../data/paws/test.tsv"]
-    train_dataset = processor.build_dataset([train_paths[0]])
-    valid_dataset = processor.build_dataset([valid_pathts[0]])
-
-    train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, sentence_pairs=False)
-    valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, sentence_pairs=False)
-    utils.save_file(train_data_loader, "cached/paws", "train_en_sense_16") 
-    utils.save_file(valid_data_loader, "cached/paws", "valid_en_sense_16") 
-    """
-    """
-    valid_data_loader = utils.load_file("cached/paws/valid_en_sense_16") 
-    print(valid_data_loader[0]["sentences_1_words_positions"])
-    print()
-    print(valid_data_loader[0]["sentences_2_words_positions"])
-    print()
-    print(len(valid_data_loader[0]["sentences_1_words_positions"]))
-    print()
-    print(len(valid_data_loader[0]["sentences_2_words_positions"]))
-
-    """
-    """
-    processor = PawsProcessor()
-    train_paths = ["../data/paws/train.tsv", "../data/paws/train.tsv"]
-    valid_pathts = ["../data/paws/test.tsv", "../data/paws/test.tsv"]
-    train_dataset = processor.build_dataset([train_paths[0]])
-    valid_dataset = processor.build_dataset([valid_pathts[0]])
-
-    train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, sentence_pairs=True)
-    valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, sentence_pairs=True)
-    utils.save_file(train_data_loader, "cached/paws", "train_pairs_en_16") 
-    utils.save_file(valid_data_loader, "cached/paws", "valid_pairs_en_16") 
-    """
-    
-    """
-
-    langs = ['ar', 'bg', 'de', 'el', 'es', 'fr', 'hi', 'ru', 'sw', 'th', 'tr', 'ur', 'vi', 'zh']
-    paths = [f"../data/xnli/dev-{l}.tsv" for l in langs]
-    train_path = ['../data/xnli/train-en.tsv']
-    paths += train_path
-    
-    train_dataset = EntailmentDataset.build_dataset(paths=paths, snli_path="../data/snli/snli_1.0_train.jsonl")
-    valid_dataset = EntailmentDataset.build_dataset(["../data/xnli/dev-en.tsv"])
-
-    train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 8, mode="standard")
-
-    valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 8, mode="standard")
-
-    utils.save_file(train_data_loader, "cached/nli", "nli_train_all_languages_8_xlm") #combination of snli and mnli
-    utils.save_file(valid_data_loader, "cached/nli", "nli_valid_8_xlm") #english dev set from nli
-    print(valid_data_loader[0])
-    """
-
-
-
-    """
-    train_data_loader = utils.load_file("cached/nli/nli_train_16")
-
-    print(train_data_loader[0])
-    """
-
-    
-    #processor = PawsProcessor()
-    #root = "../data/paws-x"
-    #for lang in os.listdir(root):
-    #    lang_dir = os.path.join(root, lang)
-    #    print(lang_dir)
-    #    for f in os.listdir(lang_dir):
-    #        file = os.path.join(lang_dir, f)
-    #        if os.path.isfile(file):
-    #            print(f)
-    #            p = os.path.join(lang_dir, f)
-    #            dataset = processor.build_dataset(examples_path=p, labels_path=p)
-    #            #dataloader = PAWSDataLoader(dataset, batch_size = 16)
-    #            utils.save_file(dataset, "../data/cached", lang+"_"+f[:-4])
-    #
-
-    """
-    processor = PawsProcessor()
-    
-    langs = ['de', 'en', 'es', 'fr', 'ja', 'ko', 'zh']
-    paths = [f'../data/paws-x/{l}/test_2k.tsv' for l in langs]
-    train_path = ['../data/paws-x/en/train.tsv']
-    paths = paths + train_path
-    train_dataset = ParaphraseDataset.build_mulilingual(paths)
-
-    train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="standard", sentence_pairs=True)
-   
-    utils.save_file(train_data_loader, "../dataset/cached", "pawsx_train_data_all_languages_sent_pairs_16")
-
-    print(train_data_loader[0])
-    """
-
-    #
-    #
-    #language_pairs = ['eng-ara', 'eng-deu', 'eng-fra', 'eng-ita', 'eng-spa', 'eng-tur']
-    #train_paths = [f'../data/tatoeba/parallel-sentences/Tatoeba-{pair}-train.tsv.gz' for pair in language_pairs ]
-    #dev_paths = [f'../data/tatoeba/parallel-sentences/Tatoeba-{pair}-dev.tsv.gz' for pair in language_pairs]
-
-    ##train_dataset = ParallelDataset.build_dataset(train_paths)
-    #valid_dataset = ParallelDataset.build_dataset(dev_paths)
-
-    ##train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="tatoeba")
-    #valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 32, mode="tatoeba")
-
-    ##utils.save_file(train_data_loader, 'cached/tatoeba', 'tatoeba_train_smart_32')
-    #utils.save_file(valid_data_loader, 'cached/tatoeba', 'tatoeba_valid_smart_32')
-    #
-    #language_pairs = ['eng-ara', 'eng-deu', 'eng-fra', 'eng-ita', 'eng-spa', 'eng-tur']
-    #train_paths = [f'../data/tatoeba/parallel-sentences/Tatoeba-{pair}-train.tsv.gz' for pair in language_pairs ]
-    #dev_paths = [f'../data/tatoeba/parallel-sentences/Tatoeba-{pair}-dev.tsv.gz' for pair in language_pairs]
-
-    ##train_dataset = ParallelDataset.build_dataset(train_paths)
-    #valid_dataset = ParallelDataset.build_dataset(dev_paths)
-    #print(len(valid_dataset))
-    #
-    #tatoeba = utils.load_file("cached/tatoeba/tatoeba_valid_smart_16")
-    #print(tatoeba[0])
-    #
-
-    """
-    langs = ['de', 'en', 'es', 'fr', 'ja', 'ko', 'zh']
-    paths = [f'../data/paws-x/{l}/test_2k.tsv' for l in langs]
-    valid_dataset = ParaphraseDataset.build_mulilingual(paths)
-    valid_dataloader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="standard", sentence_pairs=True)
-    utils.save_file(valid_dataloader, 'cached', 'pawsx_test_all_languages_16')
-    print(valid_dataloader[0])
-    """
-    #
-    #
-    #processor = WicProcessor()
-    ##train_dataset = processor.build_dataset(examples_path="../data/WiC/train/train.data.txt", labels_path="../data/WiC/train/train.gold.txt")
-    #valid_dataset = processor.build_dataset(examples_path="../data/WiC/dev/dev.data.txt", labels_path="../data/WiC/dev/dev.gold.txt")
-
-    #valid_data_loader = WiCDataLoader.build_batches(
-    #    valid_dataset, 
-    #    batch_size=config.BATCH_SIZE
-    #)
-    #
-    #print(f"Input IDS: {valid_data_loader[0]['input_ids']}\n\n")
-    #print(f"w1 indexes: {valid_data_loader[0]['w1_idxs']}\n\n")
-    #print(f"w2 indexes: {valid_data_loader[0]['w2_idxs']}")
-    #
-   

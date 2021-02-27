@@ -39,8 +39,8 @@ if __name__ == "__main__":
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=256)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
-    parser.add_argument('--model', type=str, dest="model", default="cl-tohoku/bert-base-japanese-whole-word-masking")
-    parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="../training/trained_models/sbert-jp-jsnli-paws-softmax/sbert-jp-jsnli-paws-softmax.bin")
+    parser.add_argument('--model', type=str, dest="model", default="sentence-transformers/quora-distilbert-multilingual")
+    parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="../training/trained_models/sencoder-xlmrp-dmbert-ted-multi")
     parser.add_argument('--perc', type=float, dest="corpus_percentage", default=0.005)
     parser.add_argument('--nq', type=int, dest="num_queries", default=10)
     parser.add_argument('--topk', type=int, dest="topk", default=5)
@@ -64,19 +64,10 @@ if __name__ == "__main__":
     embedder_config = transformers.AutoConfig.from_pretrained(configuration.model)
     embedder = transformers.AutoModel.from_pretrained(configuration.model, config=embedder_config)
 
-   
-    model = SiameseSentenceEmbedder(
-        params = configuration,
-        context_embedder=embedder,
-        loss = SoftmaxLoss,
-        pooling_strategy = AvgPoolingStrategy,
-        pooler = EmbeddingsPooler,
-        merge_strategy = SentenceBertCombineStrategy
-    )
-
-    #model = SentenceTransformer("xlm-r-100langs-bert-base-nli-mean-tokens")
-
-    model.load_pretrained(args.pretrained_model_path)
+    if "sentence-transformers" in args.model:
+        model = SentenceTransformer(args.model)
+    else:
+        model = SiameseSentenceEmbedder.from_pretrained(args.pretrained_model_path)
 
     num_queries = args.num_queries
 

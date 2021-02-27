@@ -17,8 +17,7 @@ class Evaluator:
         device: torch.device,
         metrics: Dict[str, List[AverageMeter]],
         fp16: bool = True,
-        verbose: bool = True,
-        return_predictions: bool = False
+        verbose: bool = True
     ):
         self.params = params
         self.model = model
@@ -27,7 +26,6 @@ class Evaluator:
         self.metrics = metrics
         self.fp16 = fp16
         self.verbose = verbose
-        self.return_predictions = return_predictions
 
     def evaluate(self, *args, **kwargs):
         raise NotImplementedError()
@@ -64,46 +62,40 @@ class ParaphraseEvaluator(Evaluator):
         super().__init__(*args, **kwargs)
 
     def evaluate(self, threshold: Union[float, None] = None):
+        results = {}
+        self.model.to(self.params.device)
+        self.model.eval()
         if self.metrics is not None:
-            meters = Metrics(*self.metrics["validation"], mode="validation", return_predictions=self.return_predictions)
+            meters = Metrics(*self.metrics["validation"], mode="validation", return_predictions=False)
         else:
             meters = None
-        self.model.to(self.device)
-        self.model.eval()
-        final_predictions = []
-        all_labels = []
-        results = {}
-        
-        iterator = tqdm(self.data_loader, total=len(self.data_loader))
-        for b_idx, data in enumerate(iterator):
-            data.to_device(self.params.device)
-            if self.fp16:
-                with amp.autocast():
+        with torch.no_grad():
+            iterator = tqdm(self.data_loader, total=len(self.data_loader))
+            for b_idx, data in enumerate(iterator):
+                data.to_device(self.params.device)
+                if self.fp16:
+                    with amp.autocast():
+                        embeddings_1 = self.model.encode(data.sentence_1_features)
+                        embeddings_2 = self.model.encode(data.sentence_2_features)
+                else:
                     embeddings_1 = self.model.encode(data.sentence_1_features)
                     embeddings_2 = self.model.encode(data.sentence_2_features)
-            else:
-                embeddings_1 = self.model.encode(data.sentence_1_features)
-                embeddings_2 = self.model.encode(data.sentence_2_features)
-            embeddings = torch.stack([embeddings_1, embeddings_2], dim=0)
-            labels = data.labels.cpu().numpy()
-            assert embeddings is not None
-            if embeddings is not None:
-                embeddings = embeddings.detach().cpu().numpy()
+                embeddings = torch.stack([embeddings_1, embeddings_2], dim=0)
+                
                 if meters is not None:
-                    for m in meters.metrics:
-                        m.update(embeddings, labels, n=self.params.batch_size, threshold=threshold)
-            if meters is not None:
-                iterator.set_postfix(**meters.set_postfix())
-        iterator.close()
-
+                    labels = data.labels.cpu().numpy()
+                    if embeddings is not None:
+                        embeddings = embeddings.detach().cpu().numpy()
+                        for m in meters.metrics:
+                            m.update(embeddings, labels, n=self.data_loader.get_batch_size)
+                    iterator.set_postfix(**meters.set_postfix())
+            iterator.close()
         if self.verbose and meters is not None:
             meters.display_metrics()
         if meters is not None:
             for m in meters.metrics:
                 results[m.get_name] = m.avg
-                if self.return_predictions:
-                    results[f"predictions_{m.get_name}"] = m.all_predictions
-                    results[f"labels_{m.get_name}"] = m.all_labels
+                m.reset()
         return results
 
 

@@ -33,6 +33,7 @@ class Configuration:
     epochs: int = 1
     device: torch.device = torch.device("cuda")
     warmup_steps: int = 0
+    fp16: bool = True
 
 
 @dataclass
@@ -42,6 +43,10 @@ class WordModelConfiguration(Configuration):
     pretrained_embeddings_dim: int = 768
     senses_as_features: bool = False
 
+
+@dataclass
+class ParallelConfiguration(Configuration):
+    tokenizer_student: transformers.AutoTokenizer = None
 
 def load_file(path):
     file_name = open(path, 'rb')

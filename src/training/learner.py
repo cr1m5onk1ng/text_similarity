@@ -98,7 +98,7 @@ class Learner:
 
         if hasattr(self.model, 'context_embedder'):
             self.model.context_embedder.save_pretrained(path)
-        if not hasattr(self.model, "context_embedder"):
+        else:
             self.model.save_pretrained(path)
 
         d['optimizer_state_dict'] = self.optimizer.state_dict()
@@ -178,6 +178,8 @@ class Learner:
                     iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
             if meters is not None:
                 iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+            else:
+                iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
         iterator.close()
         if self.verbose and meters is not None:
             meters.display_metrics()
@@ -218,6 +220,8 @@ class Learner:
                         for m in meters.metrics:
                             m.update(logits, labels, n=data_loader.get_batch_size)
                     iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+                else:
+                    iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
             iterator.close()
         if self.verbose and meters is not None:
             meters.display_metrics()

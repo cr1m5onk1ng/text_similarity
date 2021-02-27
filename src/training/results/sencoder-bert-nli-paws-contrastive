@@ -1,0 +1,8 @@
+ ------- Running training for model: sencoder-bert-nli-paws-contrastive with config: sencoder-bert-nli-paws-contrastive -------- 
+
+Params: batch size: 16; number of epochs: 1; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 2304; lr: 2e-05; merge strategy: EmbeddingsSimilarityCombineStrategy()
+training > epoch: 1; loss: 0.48779583994994047; ap: nan; accuracy: 0.5919216860967185; 
+validation > epoch: 1; loss: 0.4041958421468735; ap: 0.9040994000307851; accuracy: 0.8285; 
+
+

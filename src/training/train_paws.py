@@ -24,21 +24,19 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, dest="lr", default=2e-5)
     parser.add_argument('--dp', type=float, dest="dropout", default=0.1)
     parser.add_argument('--bs', type=int, dest="batch_size", default=16)
-    parser.add_argument('--train_path', dest="train_path", type=str, default="../data/paws-x/ja/translated_train.tsv")
-    parser.add_argument('--valid_path', dest="valid_path", type=str, default="../data/paws-x/ja/test_2k.tsv")
-    parser.add_argument('--save_path', dest="save_path", type=str, default="../models/trained_models/entailment")
+    parser.add_argument('--train_path', dest="train_path", type=str, default="../data/paws-x/en/train.tsv")
+    parser.add_argument('--valid_path', dest="valid_path", type=str, default="../data/paws-x/en/dev_2k.tsv")
+    parser.add_argument('--save_path', dest="save_path", type=str, default="./trained_models")
     parser.add_argument('--freeze', dest="freeze_weights", type=bool, default=False)
-    parser.add_argument('--pretrained', dest="use_pretrained_embeddings", type=bool, default=False)
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
     parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=256)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
-    parser.add_argument('--model', type=str, dest="model", default="cl-tohoku/bert-base-japanese-whole-word-masking")
-    parser.add_argument('--setype', type=str, dest="sense_embeddings_type", default="ares_multi")
+    parser.add_argument('--model', type=str, dest="model", default="bert-base-cased")
     parser.add_argument('--pooling', type=str, dest="pooling_strategy", default="avg")
     parser.add_argument('--loss', type=str, dest="loss", default="softmax")
     parser.add_argument('--sense_features', type=bool, dest="senses_as_features", default=True)
-    parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="trained_models/sbert-jp-jsnli/sbert-jp-jsnli.bin")
+    parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="trained_models/sencoder-bert-nli-sts")
     
 
     POOLING_STRATEGIES = {
@@ -60,11 +58,10 @@ if __name__ == "__main__":
 
     valid_dataset = processor.build_dataset([args.valid_path])
 
-    #train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="standard")
-    #valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="standard")
+    
 
-    train_data_loader = load_file("../dataset/cached/train_jp-pawsx-16-softmax")
-    valid_data_loader = load_file("../dataset/cached/valid_jp-pawsx-16-softmax")
+    #train_data_loader = load_file("../dataset/cached/train_jp-pawsx-16-softmax")
+    #valid_data_loader = load_file("../dataset/cached/valid_jp-pawsx-16-softmax")
 
     #save_file(train_data_loader, "../dataset/cached/", "train_jp-pawsx-16-softmax")
     #save_file(valid_data_loader, "../dataset/cached/", "valid_jp-pawsx-16-softmax")
@@ -77,8 +74,6 @@ if __name__ == "__main__":
     model_config = config.SenseModelParameters(
         model_name = args.config_name,
         hidden_size = args.hidden_size,
-        num_classes = 3,
-        use_pretrained_embeddings = args.use_pretrained_embeddings,
         freeze_weights = args.freeze_weights,
         context_layers = (-1,)
     )
@@ -93,12 +88,12 @@ if __name__ == "__main__":
         batch_size = args.batch_size,
         epochs = args.epochs,
         device = torch.device(args.device),
-        embedding_map = None,
-        bnids_map = None,
         tokenizer = transformers.AutoTokenizer.from_pretrained(args.model),
-        pretrained_embeddings_dim = config.DIMENSIONS_MAP[args.sense_embeddings_type],
-        senses_as_features = args.senses_as_features
     )
+    print("Building batches. This may take a while.")
+    train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="standard", config=configuration)
+    valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="standard", config=configuration)
+    print("Done.")
 
     embedder_config = transformers.AutoConfig.from_pretrained(configuration.model)
     embedder = transformers.AutoModel.from_pretrained(configuration.model, config=embedder_config)

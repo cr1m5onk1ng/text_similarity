@@ -109,10 +109,14 @@ class SimpleDistillationLoss(Loss):
 
     def forward(self, student_embeddings, features):
         ### TODO DEFINE features.src in the DATALOADER
-        self.teacher.eval()
         teacher_embeddings = self.teacher.encode(features)
         loss = self.loss(teacher_embeddings, student_embeddings)
-        return ModelOutput(loss=loss)
+        return ClassifierOutput(
+            loss=loss, 
+            predictions=torch.stack(
+                [teacher_embeddings, student_embeddings], 
+                dim=0)
+        )
 
 
 # TODO PENSARE A COME IMPLEMENTARE ATTENTION DISTILLATION SU SBERT

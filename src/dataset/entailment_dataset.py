@@ -11,7 +11,7 @@ class EntailmentExample(ParaphraseExample):
         return self.label
 
 
-class EntailmentDataset(ParaphraseDataset):
+class EntailmentDataset(Dataset):
     def __init__(self, examples, labels):
         super().__init__(examples, labels)
 

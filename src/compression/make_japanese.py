@@ -3,7 +3,7 @@ import transformers
 import torch
 from src.configurations import config
 from sentence_transformers.evaluation.SequentialEvaluator import SequentialEvaluator
-from src.dataset.dataset import ParallelDataset
+from src.dataset.parallel_dataset import ParallelDataset
 from sentence_transformers import evaluation
 from sentence_transformers.datasets import ParallelSentencesDataset
 from sentence_transformers.losses import MSELoss
@@ -46,7 +46,7 @@ if __name__ == '__main__':
         parser.add_argument('--teacher', type=str, dest="teacher_model", default="paraphrase-xlm-r-multilingual-v1")
         parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="trained_models/sbert-jp-jsnli/sbert-jp-jsnli.bin")
         parser.add_argument('--max_sentences', type=float, dest="max_sentences", default=1200000)
-        parser.add_argument('--layers', type=tuple, dest="layers", default=(1, 4, 7, 10))
+        parser.add_argument('--layers', type=tuple, dest="layers", default=None)
 
         args = parser.parse_args()
 
@@ -58,16 +58,16 @@ if __name__ == '__main__':
 
         assert(student_model.get_sentence_embedding_dimension()) == args.embed_dim
 
-        train_data = ParallelSentencesDataset(student_model=student_model, teacher_model=teacher_model)
-        train_data.load_data(args.train_path, max_sentences=args.max_sentences)
-        train_data_loader = DataLoader(train_data, shuffle=True, batch_size=args.batch_size)
-        #train_data_loader = load_file("../dataset/cached/st-jesc-train-16")
-        save_file(train_data_loader, "../dataset/cached", f"st-jesc-train-{args.batch_size}")
+        #train_data = ParallelSentencesDataset(student_model=student_model, teacher_model=teacher_model)
+        #train_data.load_data(args.train_path, max_sentences=args.max_sentences)
+        #train_data_loader = DataLoader(train_data, shuffle=True, batch_size=args.batch_size)
+        train_data_loader = load_file("../dataset/cached/st-jesc-train-16")
+        #save_file(train_data_loader, "../dataset/cached", f"st-jesc-train-{args.batch_size}")
 
         dev_dataset = ParallelDataset.build_dataset([args.valid_path]) 
 
-        src_sentences = dev_dataset.get_src_sentences
-        tgt_sentences = dev_dataset.get_tgt_sentences
+        src_sentences = list(map(lambda x: x.get_sent1, dev_dataset))
+        tgt_sentences = list(map(lambda x: x.get_sent2, dev_dataset))
 
         if student_model.get_sentence_embedding_dimension() < teacher_model.get_sentence_embedding_dimension():
             reduce_sentences = tgt_sentences[:25000]

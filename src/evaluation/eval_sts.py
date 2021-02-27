@@ -24,7 +24,7 @@ if __name__ == "__main__":
     parser.add_argument('--dp', type=float, dest="dropout", default=0.1)
     parser.add_argument('--bs', type=int, dest="batch_size", default=16)
     parser.add_argument('--save_path', dest="save_path", type=str, default="../evaluation/results")
-    parser.add_argument('--pretrained_path', dest="pretrained_path", type=str, default="../training/trained_models/sencoder-bert-nli")
+    parser.add_argument('--pretrained_path', dest="pretrained_path", type=str, default="../training/trained_models/sencoder-bert-nli-sts-paws-contrastive")
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
     parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
@@ -34,10 +34,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     valid_dataset = StsDataset.build_dataset("../data/sts/stsbenchmark.tsv", mode="test")
-
-    sentences1 = list(map(lambda x: x.get_sent1, valid_dataset.examples))
-    sentences2 = list(map(lambda x: x.get_sent2, valid_dataset.examples))
-    labels = valid_dataset.labels
 
     model_config = config.ModelParameters(
         model_name = args.config_name,

@@ -1,7 +1,12 @@
-from os import name
+
 import os
+from sys import setdlopenflags
+
+from transformers.utils.dummy_tf_objects import TF_LXMERT_PRETRAINED_MODEL_ARCHIVE_LIST
+from src.modules.pooling import AvgPoolingStrategy, EmbeddingsPooler, EmbeddingsSimilarityCombineStrategy, SentenceBertCombineStrategy
 
 import sentence_transformers
+import transformers
 
 from src.training.train import Trainer
 from src.models.modeling import BaseEncoderModel
@@ -11,16 +16,18 @@ from src.utils.metrics import AverageMeter, Metrics
 from ..models.sentence_encoder import SiameseSentenceEmbedder
 import torch
 from torch import nn
+import torch.nn.functional as F
 from ..training.learner import Learner
 from ..dataset.dataset import DataLoader, Dataset, SmartParaphraseDataloader
 from ..models.losses import SimpleDistillationLoss
 from typing import Dict, List
-import tqdm
+from tqdm import tqdm
 from torch.cuda import amp
 from queue import PriorityQueue
 from heapq import heappush, heappop
 from sentence_transformers import SentenceTransformer, models, losses, evaluation
 from sklearn.decomposition import PCA
+from abc import ABC, abstractmethod
 
 import logging
 
@@ -83,16 +90,15 @@ class Pruner(Learner):
 
         # filling the weights with the original data
         for layer_num in range(model.config.num_hidden_layers):
-            self.inter_weights[layer_num] = self.layers._modules[str(layer_num)].intermediate.dense.weight.detach().to(params.device)
-            self.inter_biases[layer_num] = self.layers._modules[str(layer_num)].intermediate.dense.bias.detach().to(params.device)
-            self.output_weights[layer_num] = self.layers._modules[str(layer_num)].output.dense.weight.detach().to(params.device)
+            self.inter_weights[layer_num] = self.layers._modules[str(layer_num)].intermediate.dense.weight.detach().to(self.params.device)
+            self.inter_biases[layer_num] = self.layers._modules[str(layer_num)].intermediate.dense.bias.detach().to(self.params.device)
+            self.output_weights[layer_num] = self.layers._modules[str(layer_num)].output.dense.weight.detach().to(self.params.device)
 
         #the parameters to optimize
         self.head_mask = torch.ones(
             model.config.num_hidden_layers,
             model.config.num_attention_heads, 
             requires_grad=True).to(self.params.device)
-
 
     def update_importance(self):
         for layer_num in range(self.model.context_edbedder.model.config.num_hidden_layers):
@@ -217,7 +223,7 @@ class Pruner(Learner):
         total_tokens = 0.
         losses = AverageMeter("loss")
         if self.metrics is not None:
-            meters = Metrics(*self.metrics["validation"], mode="validation", return_predictions=return_predictions)
+            meters = Metrics(*self.metrics["validation"], mode="validation", return_predictions=False)
         else:
             meters = None
         self.model.to(self.params.device)
@@ -278,45 +284,60 @@ class Pruner(Learner):
        
         return results
 
-class Distiller:
+class Distiller(Learner):
     def __init__(
         self, 
-        params,
-        student_model,
-        teacher_model, 
-        train_dataloader,
-        model_save_path,
+        teacher_model: nn.Module, 
+        train_dataloader: DataLoader,
+        model_save_path: str,
         *args,
+        evaluator=None,
         **kwargs
         ):
-        self.params = params
-        self.student_model = student_model
-        self.teacher_model = teacher_model
+        super().__init__(*args, **kwargs)
+        self.teacher = teacher_model
         self.train_dataloader = train_dataloader
         self.model_save_path = model_save_path
+        self.evaluator = evaluator
+
+    def _reduce_dim(self, sentences):
+        logging.info("Student model has fewer dimensions that the teacher. Compute PCA for down projection")
+        pca_embeddings = self.teacher.encode(sentences, convert_to_numpy=True)
+        pca = PCA(n_components=self.model_model.get_sentence_embedding_dimension())
+        pca.fit(pca_embeddings)
+
+        #Add Dense layer to teacher that projects the embeddings down to the student embedding size
+        dense = models.Dense(in_features=self.teacher.get_sentence_embedding_dimension(), out_features=self.model_model.get_sentence_embedding_dimension(), bias=False, activation_function=torch.nn.Identity())
+        dense.linear.weight = torch.nn.Parameter(torch.tensor(pca.components_))
+        self.teacher.add_module('dense', dense)
 
 
-class SentenceTransformersDistiller(Distiller):
-    def __init__(self, evaluators, *args, layers = (1, 4, 7, 10), **kwargs):
-        super().__init__(*args, **kwargs)
+class SentenceTransformersDistiller():
+    def __init__(self, params, student_model, teacher_model, train_dataloader, evaluators, model_save_path, *args, layers = (1, 4, 7, 10), **kwargs):
+        self.params = params
+        self.model_model = student_model
+        self.teacher = teacher_model
+        self.train_dataloader = train_dataloader
         self.evaluators = evaluators
+        self.model_save_path = model_save_path
         self.layers = layers
-        model = self.student_model._first_module().auto_model
-        layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
-        model.encoder.layer = layers_to_keep
-        model.config.num_hidden_layers = len(layers)
-        self.student_model._first_module().auto_model = model
-        assert len(self.student_model._first_module().auto_model.layer) == len(args.layers)
-        self.loss = losses.MSELoss(model=self.student_model)
+        model = self.model_model._first_module().auto_model
+        if layers is not None:
+            layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
+            model.encoder.layer = layers_to_keep
+            model.config.num_hidden_layers = len(layers)
+            self.model_model._first_module().auto_model = model
+            assert len(self.model_model._first_module().auto_model.layer) == len(args.layers)
+        self.loss = losses.MSELoss(model=self.model_model)
 
     def distill(self, reduce_sentences=None):
         logging.info("######## Starting model distillation ########")
-        if (self.student_model.get_sentence_embedding_dimension() < 
-            self.teacher_model.get_sentence_embedding_dimension()):
+        if (self.model_model.get_sentence_embedding_dimension() < 
+            self.teacher.get_sentence_embedding_dimension()):
             if reduce_sentences is not None:
                 self._reduce_dim(reduce_sentences)
 
-        self.student_model.fit(
+        self.model_model.fit(
             train_objectives=[(self.train_dataloader, self.loss)],
             evaluator=evaluation.SequentialEvaluator(
                 self.evaluators,
@@ -327,51 +348,312 @@ class SentenceTransformersDistiller(Distiller):
                 save_best_model=True,
                 optimizer_params={'lr': 2e-5, 'eps': 1e-6, 'correct_bias': False},
                 use_amp=True
-        )
+        ) 
+        
 
-    def _reduce_dim(self, sentences):
+class DistillationStrategy(Learner):
+    def __init__(self, teacher: nn.Module, train_dataloader, *args, evaluator=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.teacher = teacher
+        self.train_dataloader = train_dataloader
+        self.evaluator = evaluator
+
+    def _distillation_step(self):
+        raise NotImplementedError()
+
+    def distill(self):
+        min_loss = np.inf
+        for epoch in range(self.params.epochs):
+            print(f"###### EPOCH {epoch+1} #######")
+            results = self._distillation_step()
+            loss = results["loss"]
+            if loss < min_loss:
+                min_loss = loss
+                self.save_model(os.path.join(self.params.save_path, self.config_name))
+            if self.evaluator is not None:
+                self.evaluator.evaluate()
+
+    def reduce_dim(self, sentences):
         logging.info("Student model has fewer dimensions that the teacher. Compute PCA for down projection")
-        pca_embeddings = self.teacher_model.encode(sentences, convert_to_numpy=True)
-        pca = PCA(n_components=self.student_model.get_sentence_embedding_dimension())
+        pca_embeddings = self.teacher.encode(sentences, convert_to_numpy=True)
+        pca = PCA(n_components=self.model.context_embedder.config.hidden_size)
         pca.fit(pca_embeddings)
 
         #Add Dense layer to teacher that projects the embeddings down to the student embedding size
-        dense = models.Dense(in_features=self.teacher_model.get_sentence_embedding_dimension(), out_features=self.student_model.get_sentence_embedding_dimension(), bias=False, activation_function=torch.nn.Identity())
+        dense = models.Dense(in_features=self.teacher.get_sentence_embedding_dimension(), out_features=self.model_model.get_sentence_embedding_dimension(), bias=False, activation_function=torch.nn.Identity())
         dense.linear.weight = torch.nn.Parameter(torch.tensor(pca.components_))
-        self.teacher_model.add_module('dense', dense)
-        
+        self.teacher.add_module('dense', dense)
 
-class SentenceEncoderDistiller(Learner):
+
+class FastFormersDistiller(DistillationStrategy):
+    def __init__(self, state_loss_ratio, tr_att_loss_ratio, use_cosine_sim, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.state_loss_ratio = state_loss_ratio
+        self.tr_att_loss_ratio = tr_att_loss_ratio
+        self.use_cosine_sim = use_cosine_sim
+        self.loss_mse = nn.MSELoss()
+        self.loss_cs = nn.CosineSimilarity(dim=2)
+        self.loss_cs_att = nn.CosineSimilarity(dim=3)
+        self.tr_att_loss = AverageMeter("tr_att_loss")
+        self.tr_rep_loss = AverageMeter("tr_rep_loss")
+        self.tr_cls_loss = AverageMeter("tr_cls_loss")
+        self.cls_loss = 0.
+        self.rep_loss = 0.
+        self.attn_loss = 0.
+        self.teacher_layer_num = self.teacher.context_embedder.config.num_hidden_layers
+        self.model_layer_num = self.model.context_embedder.config.num_hidden_layers
+
+    def _step(self, data, b_idx):
+        with torch.no_grad():
+            pooled_teacher, outputs_teacher = self.teacher.encode(data.sentence_1_features, output_attention=True)
+        pooled_student, outputs_student = self.model.encode(data.sentence_2_features, output_attention=True)
+        loss = self._calculate_losses(outputs_teacher, outputs_student)
+        if self.accumulation_steps > 1:
+            loss = loss / self.accumulation_steps
+        loss.backward()
+        if self.max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        if (b_idx + 1) % self.accumulation_steps == 0:
+            self.optimizer.step()
+        return loss, torch.stack([pooled_teacher, pooled_student], dim = 0)
+
+    def _mixed_precision_step(self, data, b_idx):
+        with torch.no_grad():
+            pooled_teacher, outputs_teacher = self.teacher.encode(data.sentence_1_features, output_attention=True)
+        pooled_student, outputs_student = self.model.encode(data.sentence_2_features, output_attention=True)
+        loss = self._calculate_losses(outputs_teacher, outputs_student)
+        scale_before_step = self.scaler.get_scale()
+        self.scaler.scale(loss).backward()
+        if self.max_grad_norm is not None:
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        return loss, torch.stack([pooled_teacher, pooled_student], dim=0), scale_before_step
+
+    def _logits_distillation(self, outputs_teacher, outputs_student):
+        kd_loss = self.soft_cross_entropy(outputs_student[1], outputs_teacher[1])
+        loss = kd_loss
+        self.cls_loss += kd_loss
+        self.tr_cls_loss.update(kd_loss.item(), n=self.train_dataloader.get_batch_size)
+        return loss
+
+    def _embeddings_distillation(self, outputs_teacher, outputs_student):
+        teacher_reps = outputs_teacher[2]
+        student_reps = outputs_student[2]
+        new_teacher_reps = [teacher_reps[0], teacher_reps[self.teacher_layer_num]]
+        new_student_reps = [student_reps[0], student_reps[self.model_layer_num]]
+        tmp_loss = 0
+        for student_rep, teacher_rep in zip(new_student_reps, new_teacher_reps):
+            if self.use_cosine_sim:
+                tmp_loss = 1.0 - self.loss_cs(student_rep, teacher_rep).mean()
+            else:
+                tmp_loss = self.loss_mse(student_rep, teacher_rep)
+        self.rep_loss += tmp_loss
+        self.tr_rep_loss.update(tmp_loss.item(), n=self.train_dataloader.get_batch_size)
+        return self.state_loss_ratio * self.rep_loss
+
+    def _attention_distillation(self, outputs_teacher, outputs_student):
+        teacher_atts = outputs_teacher[3]
+        student_atts = outputs_student[3]
+        assert self.teacher_layer_num == len(teacher_atts)
+        assert self.model_layer_num == len(student_atts)
+        assert self.teacher_layer_num % self.model_layer_num == 0
+        layers_per_block = int(self.teacher_layer_num / self.model_layer_num)
+        new_teacher_atts = [teacher_atts[i*layers_per_block + layers_per_block - 1] for i in range(self.model_layer_num)]
+        tmp_loss = 0
+        for student_att, teacher_att in zip(student_atts, new_teacher_atts):
+            student_att = torch.where(student_att <= -1e2, torch.zeros_like(student_att).to(self.params.device), student_att)
+            teacher_att = torch.where(teacher_att <= -1e2, torch.zeros_like(teacher_att).to(self.params.device), teacher_att)
+            tmp_loss = 1.0 - self.loss_cs_att(student_att, teacher_att).mean()
+        self.att_loss += tmp_loss
+        self.tr_att_loss.update(tmp_loss.item(), n=self.train_dataloader.get_batch_size)
+        return self.tr_att_loss_ratio * self.att_loss
+
+    def _calculate_losses(self, outputs_teacher, outputs_student):
+        loss = self._logits_distillation(outputs_teacher, outputs_student)
+        loss += self._embeddings_distillation(outputs_teacher, outputs_student)
+        loss += self._attention_distillation(outputs_teacher, outputs_student)
+        return loss
+    
+    def soft_cross_entropy(self, predicts, targets):
+        student_likelihood = torch.nn.functional.log_softmax(predicts, dim=-1)
+        targets_prob = torch.nn.functional.softmax(targets, dim=-1)
+        return (- targets_prob * student_likelihood).sum(dim=-1).mean() 
+
+    def _distillation_step(self):
+        if self.metrics is not None:
+            meters = Metrics(*self.metrics["training"])
+        else:
+            meters = None
+        iterator = tqdm(self.train_dataloader, total=len(self.train_dataloader))
+        self.model.to(self.params.device)
+        self.teacher.to(self.params.device)
+        self.model.train()
+        self.teacher.eval()
+        loss = 0.
+        for b_idx, data in enumerate(iterator):
+            data.to_device(self.params.device)
+            if self.accumulation_steps == 1 and b_idx == 0:
+                self.optimizer.zero_grad()
+            skip_scheduler = False
+            if self.fp16:
+                loss, embeddings, scale_before_step = self._mixed_precision_step(data, b_idx)
+                skip_scheduler = self.scaler.get_scale() != scale_before_step
+            else:
+               loss, embeddings = self._step(data, b_idx)
+
+            if b_idx > 0:
+                self.optimizer.zero_grad()
+            
+            if self.scheduler is not None:
+                if not skip_scheduler:
+                    self.scheduler.step()
+        
+            losses.update(loss.item(), self.params.batch_size)
+            if meters is not None:
+                    labels = data.labels.cpu().numpy()
+                    if embeddings is not None:
+                        embeddings = embeddings.detach().cpu().numpy()
+                        for m in meters.metrics:
+                            m.update(embeddings, labels, n=self.params.batch_size)
+                    iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+            if meters is not None:
+                iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+            else:
+                iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
+        iterator.close()
+        if self.verbose and meters is not None:
+            meters.display_metrics()
+        results = {"loss": losses.avg}
+        if meters is not None:
+            for m in meters.metrics:
+                results[m.get_name] = m.avg
+                m.reset()
+        return results
+
+
+class SentenceEncoderDistiller(DistillationStrategy):
     """
     Distiller module based on SBERT implementation
     """
     def __init__(
         self, 
-        teacher_model: SiameseSentenceEmbedder, 
-        train_dataloader: DataLoader,
-        model_save_path,
         *args,
         layers=(1, 4, 7, 10),
         **kwargs
         ):
         super().__init__(*args, **kwargs)
-        self.teacher_model = teacher_model
-        self.train_dataloader = train_dataloader
-        self.model_save_path = model_save_path
-        model = self.model.context_embedder
-        layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
-        model.encoder.layer = layers_to_keep
-        model.config.num_hidden_layers = len(layers_to_keep)
-        self.model.context_embedder = model
-        
+        #self.loss = nn.MSELoss()
+        if layers is not None:
+            model = self.model.context_embedder
+            layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
+            model.encoder.layer = layers_to_keep
+            model.config.num_hidden_layers = len(layers_to_keep)
+            self.model.context_embedder = model
+            assert self.model.context_embedder.config.num_hidden_layers == len(layers)
 
-    def distill(self):
-        logging.info(f"##### Making some fine liquor with model: {self.learner.config_name}#####")
-        best_loss = np.inf
-        self.student_model.zero_grad()
-        res = self.train_fn(self.train_dataloader)
-        self.save_model(self.model_save_path)
-        return res["loss"]
+    def mse_loss(self, teacher_embeddings, student_embeddings_src, student_embeddings_tgt):
+        src_square_diff = F.mse_loss(teacher_embeddings, student_embeddings_src)
+        tgt_square_diff = F.mse_loss(teacher_embeddings, student_embeddings_tgt)
+        return src_square_diff + tgt_square_diff
+
+    def _step(self, data, b_idx):
+        with torch.no_grad():
+            if isinstance(self.teacher, SentenceTransformer):
+                    embeddings_1 = self.teacher.encode(data.src_sentences, convert_to_tensor=True, device=self.params.device, show_progress_bar=False)
+                    embeddings_1 = embeddings_1.to(self.params.device)
+            elif isinstance(self.teacher, SiameseSentenceEmbedder):
+                embeddings_1 = self.teacher.encode(data.sentence_1_features)
+            else:
+                embeddings_1 = self.teacher(data.sentence_1_features.to_dict())
+        embeddings_2_src = self.model.encode(data.sentence_1_features)
+        embeddings_2_tgt = self.model.encode(data.sentence_2_features)
+        loss = self.mse_loss(embeddings_1, embeddings_2_src, embeddings_2_tgt)
+        if self.accumulation_steps > 1:
+            loss = loss / self.accumulation_steps
+        loss.backward()
+        if self.max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        if (b_idx + 1) % self.accumulation_steps == 0:
+            self.optimizer.step()
+        return loss, torch.stack([embeddings_1, embeddings_2_tgt], dim=0)
+
+    def _mixed_precision_step(self, data, b_idx):
+        with amp.autocast():
+            with torch.no_grad():
+                if isinstance(self.teacher, SentenceTransformer):
+                    embeddings_1 = self.teacher.encode(data.src_sentences, convert_to_tensor=True, device=self.params.device, show_progress_bar=False)
+                    embeddings_1 = embeddings_1.to(self.params.device)
+                else:
+                    embeddings_1 = self.teacher.encode(data.sentence_1_features)
+            embeddings_2_src = self.model.encode(data.sentence_1_features)
+            embeddings_2_tgt = self.model.encode(data.sentence_2_features)
+        loss = self.mse_loss(embeddings_1, embeddings_2_src, embeddings_2_tgt)
+        scale_before_step = self.scaler.get_scale()
+        self.scaler.scale(loss).backward()
+        if self.max_grad_norm is not None:
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+  
+        return loss, torch.stack([embeddings_1, embeddings_2_tgt], dim=0), scale_before_step
+
+    def _distillation_step(self):
+        logging.info(f"##### Making some fine liquor with model: {self.config_name}#####")
+        losses = AverageMeter("loss")
+        if self.metrics is not None:
+            meters = Metrics(*self.metrics["training"])
+        else:
+            meters = None
+        iterator = tqdm(self.train_dataloader, total=len(self.train_dataloader))
+        self.model.to(self.params.device)
+        self.teacher.to(self.params.device)
+        self.teacher.eval()
+        self.model.train()
+        results = []
+        for b_idx, data in enumerate(iterator):
+            data.to_device(self.params.device)
+            if self.accumulation_steps == 1 and b_idx == 0:
+                self.optimizer.zero_grad()
+            skip_scheduler = False
+            if self.fp16:
+                loss, embeddings, scale_before_step = self._mixed_precision_step(data, b_idx)
+                skip_scheduler = self.scaler.get_scale() != scale_before_step
+            else:
+               loss, embeddings = self._step(data, b_idx)
+
+            if b_idx > 0:
+                self.optimizer.zero_grad()
+            
+            if self.scheduler is not None:
+                if not skip_scheduler:
+                    self.scheduler.step()
+        
+            losses.update(loss.item(), self.params.batch_size)
+            if meters is not None:
+                    labels = data.labels.cpu().numpy()
+                    if embeddings is not None:
+                        embeddings = embeddings.detach().cpu().numpy()
+                        for m in meters.metrics:
+                            m.update(embeddings, labels, n=self.params.batch_size)
+                    iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+            if meters is not None:
+                iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+            else:
+                iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
+        iterator.close()
+        if self.verbose and meters is not None:
+            meters.display_metrics()
+        results = {"loss": losses.avg}
+        if meters is not None:
+            for m in meters.metrics:
+                results[m.get_name] = m.avg
+                m.reset()
+        return results
+
+       
 
 
 

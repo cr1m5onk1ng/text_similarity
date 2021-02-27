@@ -1,0 +1,8 @@
+ ------- Running training for model: sencoder-bert-nli-paws with config: sencoder-bert-nli-paws -------- 
+
+Params: batch size: 16; number of epochs: 1; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 2304; lr: 2e-05; merge strategy: SentenceBertCombineStrategy()
+training > epoch: 1; loss: 0.5474020006289523; accuracy: 0.7043933506044905; 
+validation > epoch: 1; loss: 0.49347401565313337; accuracy: 0.7815; 
+
+
