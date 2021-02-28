@@ -26,20 +26,21 @@ if __name__ == '__main__':
         parser.add_argument('--embed_dim', type=int, dest="embed_dim", default=768)
         parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
         parser.add_argument('--device', type=str, dest="device", default="cuda")
-        parser.add_argument('--student_model', type=str, dest="student_model", default="xlm-roberta-base")
+        parser.add_argument('--student_model', type=str, dest="student_model", default="distilbert-base-multilingual-cased")
         parser.add_argument('--teacher_model', type=str, dest="teacher_model", default="sentence-transformers/paraphrase-distilroberta-base-v1")
         parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="trained_models/sencoder-bert-nli-sts")
         parser.add_argument('--max_sentences', type=float, dest="max_sentences", default=1200000)
-        parser.add_argument('--layers', type=tuple, dest="layers", default=(1, 4, 7, 10))
+        parser.add_argument('--layers', type=tuple, dest="layers", default=None)
         parser.add_argument('--save_path', dest="save_path", type=str, default="./trained_models")
 
         args = parser.parse_args()
 
-        train_langs = ['ja']
+        train_langs = ['ja', 'fr', "es", "de", "ko", "nl"]
         dev_langs = ['fr', 'it', 'nl', 'es']
         train_paths = [f"../data/parallel-sentences/TED2020-en-{l}-train.tsv.gz" for l in train_langs]
         valid_paths = [f"../data/sts/STS2017-extended/STS.{l}-en.txt" for l in dev_langs]
-        train_dataset = ParallelDataset.build_dataset(train_paths)
+        #train_dataset = ParallelDataset.build_dataset(train_paths, max_examples=200000)
+        #print(f"Number of examples: {len(train_dataset)}")
         valid_dataset = StsDataset.build_multilingual(valid_paths)
        
 
@@ -68,10 +69,10 @@ if __name__ == '__main__':
         print("Done.")
 
         print("Loading training dataloader...")
-        #train_dataloader = load_file("../dataset/cached/ted_train_ja_droberta-distillbert-sbertformat")
+        train_dataloader = load_file("../dataset/cached/ted_train_multi-distilbert")
         #print(f"Data loader sample {train_dataloader[512].src_sentences} ")
-        train_dataloader = SmartParaphraseDataloader.build_batches(train_dataset, args.batch_size, mode="parallel", config=configuration_student, sbert_format=True)
-        save_file(train_dataloader, "../dataset/cached", "ted_train_jp-xlmr")
+        #train_dataloader = SmartParaphraseDataloader.build_batches(train_dataset, args.batch_size, mode="parallel", config=configuration_student, sbert_format=True)
+        #save_file(train_dataloader, "../dataset/cached", "ted_train_multi-distilbert")
         print("Done.")
         
         teacher_model = SentenceTransformer(args.teacher_model)

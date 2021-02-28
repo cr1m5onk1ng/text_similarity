@@ -44,6 +44,7 @@ if __name__ == "__main__":
     parser.add_argument('--perc', type=float, dest="corpus_percentage", default=0.005)
     parser.add_argument('--nq', type=int, dest="num_queries", default=10)
     parser.add_argument('--topk', type=int, dest="topk", default=5)
+    parser.add_argument('--sbert', type=bool, dest="use_sbert",default=False)
     args = parser.parse_args()
 
     random.seed(43)
@@ -64,7 +65,7 @@ if __name__ == "__main__":
     embedder_config = transformers.AutoConfig.from_pretrained(configuration.model)
     embedder = transformers.AutoModel.from_pretrained(configuration.model, config=embedder_config)
 
-    if "sentence-transformers" in args.model:
+    if args.use_sbert:
         model = SentenceTransformer(args.model)
     else:
         model = SiameseSentenceEmbedder.from_pretrained(args.pretrained_model_path)
