@@ -313,24 +313,33 @@ class Distiller(Learner):
 
 
 class SentenceTransformersDistiller():
-    def __init__(self, params, student_model, teacher_model, train_dataloader, evaluators, model_save_path, *args, layers = (1, 4, 7, 10), **kwargs):
+    def __init__(self, params, student_model, teacher_model, train_dataset, evaluators, model_save_path, *args, layers = (1, 4, 7, 10), **kwargs):
         self.params = params
-        self.model_model = student_model
+        self.model = student_model
         self.teacher = teacher_model
-        self.train_dataloader = train_dataloader
+        self.train_dataset = train_dataset
         self.evaluators = evaluators
         self.model_save_path = model_save_path
         self.layers = layers
-        model = self.model_model._first_module().auto_model
+        model = self.model._first_module().auto_model
         if layers is not None:
-            layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
-            model.encoder.layer = layers_to_keep
-            model.config.num_hidden_layers = len(layers)
-            self.model_model._first_module().auto_model = model
-            assert len(self.model_model._first_module().auto_model.layer) == len(args.layers)
-        self.loss = losses.MSELoss(model=self.model_model)
+            if "distilbert" in self.params.model:
+                layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
+                model.encoder.layer = layers_to_keep
+                model.config.num_hidden_layers = len(layers)
+                self.model._first_module().auto_model = model
+            else:
+                layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.layer) if i in layers])
+                model.layer = layers_to_keep
+                model.config.num_hidden_layers = len(layers)
+                self.model._first_module().auto_model = model
+            assert len(self.model._first_module().auto_model.layer) == len(args.layers)
+        self.loss = losses.MSELoss(model=self.model)
 
     def distill(self, reduce_sentences=None):
+        logging.info("######## Loading parallel sentences ########")
+
+
         logging.info("######## Starting model distillation ########")
         if (self.model_model.get_sentence_embedding_dimension() < 
             self.teacher.get_sentence_embedding_dimension()):
@@ -358,14 +367,17 @@ class DistillationStrategy(Learner):
         self.train_dataloader = train_dataloader
         self.evaluator = evaluator
 
-    def _distillation_step(self):
+    def _distillation_step(self, save_every_n=None):
         raise NotImplementedError()
 
-    def distill(self):
+    def distill(self, save_every_n=None):
+        if self.fp16:
+            print("#### Using mixed precision training ####")
+            print()
         min_loss = np.inf
         for epoch in range(self.params.epochs):
             print(f"###### EPOCH {epoch+1} #######")
-            results = self._distillation_step()
+            results = self._distillation_step(save_every_n=save_every_n)
             loss = results["loss"]
             if loss < min_loss:
                 min_loss = loss
@@ -481,7 +493,7 @@ class FastFormersDistiller(DistillationStrategy):
         targets_prob = torch.nn.functional.softmax(targets, dim=-1)
         return (- targets_prob * student_likelihood).sum(dim=-1).mean() 
 
-    def _distillation_step(self):
+    def _distillation_step(self, save_every_n=None):
         if self.metrics is not None:
             meters = Metrics(*self.metrics["training"])
         else:
@@ -522,6 +534,9 @@ class FastFormersDistiller(DistillationStrategy):
                 iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
             else:
                 iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
+            if save_every_n is not None:
+                if b_idx % save_every_n == 0:
+                    self.save_model(self.params.save_path)
         iterator.close()
         if self.verbose and meters is not None:
             meters.display_metrics()
@@ -540,36 +555,65 @@ class SentenceEncoderDistiller(DistillationStrategy):
     def __init__(
         self, 
         *args,
-        layers=(1, 4, 7, 10),
+        layers=[1, 4, 7, 10],
+        multilingual=False,
         **kwargs
         ):
         super().__init__(*args, **kwargs)
         #self.loss = nn.MSELoss()
-        if layers is not None:
+        self.multilingual = multilingual
+        if isinstance(self.model, SentenceTransformer):
+            model = self.model._first_module().auto_model
+        elif isinstance(self.model, SiameseSentenceEmbedder):
             model = self.model.context_embedder
-            layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
-            model.encoder.layer = layers_to_keep
-            model.config.num_hidden_layers = len(layers_to_keep)
-            self.model.context_embedder = model
+        else:
+            model = self.model
+        if layers is not None:
+            if "distilbert" in self.params.model:
+                layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.transformer.layer) if i in layers])
+                model.transformer.layer = layers_to_keep
+                model.config.n_layers = len(layers_to_keep)
+                self.model.context_embedder = model
+            else:
+                layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
+                model.encoder.layer = layers_to_keep
+                model.config.num_hidden_layers = len(layers_to_keep)
+                self.model.context_embedder = model
             assert self.model.context_embedder.config.num_hidden_layers == len(layers)
 
-    def mse_loss(self, teacher_embeddings, student_embeddings_src, student_embeddings_tgt):
-        src_square_diff = F.mse_loss(teacher_embeddings, student_embeddings_src)
-        tgt_square_diff = F.mse_loss(teacher_embeddings, student_embeddings_tgt)
+    def _mse_loss_multi(self, teacher_embeddings, student_embeddings_src, student_embeddings_tgt):
+        src_square_diff = F.mse_loss(student_embeddings_src, teacher_embeddings)
+        tgt_square_diff = F.mse_loss(student_embeddings_tgt, teacher_embeddings)
         return src_square_diff + tgt_square_diff
+
+    def _mse_loss(self, student_embeddings, teacher_embeddings):
+        return F.mse_loss(student_embeddings, teacher_embeddings)
 
     def _step(self, data, b_idx):
         with torch.no_grad():
             if isinstance(self.teacher, SentenceTransformer):
-                    embeddings_1 = self.teacher.encode(data.src_sentences, convert_to_tensor=True, device=self.params.device, show_progress_bar=False)
+                    if not self.multilingual:
+                        embeddings_1 = self.teacher.encode(data.sentences, convert_to_tensor=True, device=self.params.device, show_progress_bar=False)
+                    else:
+                        embeddings_1 = self.teacher.encode(data.src_sentences, convert_to_tensor=True, device=self.params.device, show_progress_bar=False)
                     embeddings_1 = embeddings_1.to(self.params.device)
-            elif isinstance(self.teacher, SiameseSentenceEmbedder):
-                embeddings_1 = self.teacher.encode(data.sentence_1_features)
             else:
-                embeddings_1 = self.teacher(data.sentence_1_features.to_dict())
-        embeddings_2_src = self.model.encode(data.sentence_1_features)
-        embeddings_2_tgt = self.model.encode(data.sentence_2_features)
-        loss = self.mse_loss(embeddings_1, embeddings_2_src, embeddings_2_tgt)
+                if not self.multilingual:
+                    embeddings_1 = self.teacher.encode(data.features)
+                else:
+                    embeddings_1 = self.teacher.encode(data.setence_1_features)
+
+        if not self.multilingual:
+                embeddings_2 = self.model.encode(data.features)
+        else:
+            embeddings_2_src = self.model.encode(data.sentence_1_features)
+            embeddings_2_tgt = self.mode.encode(data.sentence_2_features)       
+
+        if not self.multilingual:
+            loss = self._mse_loss(student_embeddings=embeddings_2, teacher_embeddings=embeddings_1)  
+        else:
+            loss = self._mse_loss_multi(embeddings_1, embeddings_2_src, embeddings_2_tgt)
+            
         if self.accumulation_steps > 1:
             loss = loss / self.accumulation_steps
         loss.backward()
@@ -583,24 +627,35 @@ class SentenceEncoderDistiller(DistillationStrategy):
         with amp.autocast():
             with torch.no_grad():
                 if isinstance(self.teacher, SentenceTransformer):
-                    embeddings_1 = self.teacher.encode(data.src_sentences, convert_to_tensor=True, device=self.params.device, show_progress_bar=False)
+                    if not self.multilingual:
+                        embeddings_1 = self.teacher.encode(data.sentences, convert_to_tensor=True, device=self.params.device, show_progress_bar=False)
+                    else:
+                        embeddings_1 = self.teacher.encode(data.src_sentences, convert_to_tensor=True, device=self.params.device, show_progress_bar=False)
                     embeddings_1 = embeddings_1.to(self.params.device)
                 else:
-                    embeddings_1 = self.teacher.encode(data.sentence_1_features)
-            embeddings_2_src = self.model.encode(data.sentence_1_features)
-            embeddings_2_tgt = self.model.encode(data.sentence_2_features)
-        loss = self.mse_loss(embeddings_1, embeddings_2_src, embeddings_2_tgt)
+                    if not self.multilingual:
+                        embeddings_1 = self.teacher.encode(data.features)
+                    else:
+                        embeddings_1 = self.teacher.encode(data.setence_1_features)
+            if not self.multilingual:
+                embeddings_2 = self.model.encode(data.features)
+            else:
+                embeddings_2_src = self.model.encode(data.sentence_1_features)
+                embeddings_2_tgt = self.mode.encode(data.sentence_2_features)
+        if not self.multilingual:
+            loss = self._mse_loss(student_embeddings=embeddings_2, teacher_embeddings=embeddings_1)  
+        else:
+            loss = self._mse_loss_multi(embeddings_1, embeddings_2_src, embeddings_2_tgt)
         scale_before_step = self.scaler.get_scale()
         self.scaler.scale(loss).backward()
-        if self.max_grad_norm is not None:
-            self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+        self.scaler.unscale_(self.optimizer)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
   
-        return loss, torch.stack([embeddings_1, embeddings_2_tgt], dim=0), scale_before_step
+        return loss, torch.stack([embeddings_1, embeddings_2 if not self.multilingual else embeddings_2_tgt], dim=0), scale_before_step
 
-    def _distillation_step(self):
+    def _distillation_step(self, save_every_n=None):
         logging.info(f"##### Making some fine liquor with model: {self.config_name}#####")
         losses = AverageMeter("loss")
         if self.metrics is not None:
@@ -613,18 +668,16 @@ class SentenceEncoderDistiller(DistillationStrategy):
         self.teacher.eval()
         self.model.train()
         results = []
+        skip_scheduler = False
         for b_idx, data in enumerate(iterator):
             data.to_device(self.params.device)
-            if self.accumulation_steps == 1 and b_idx == 0:
-                self.optimizer.zero_grad()
-            skip_scheduler = False
             if self.fp16:
                 loss, embeddings, scale_before_step = self._mixed_precision_step(data, b_idx)
                 skip_scheduler = self.scaler.get_scale() != scale_before_step
             else:
                loss, embeddings = self._step(data, b_idx)
 
-            if b_idx > 0:
+            if (b_idx + 1) % self.accumulation_steps == 0:
                 self.optimizer.zero_grad()
             
             if self.scheduler is not None:
@@ -643,6 +696,9 @@ class SentenceEncoderDistiller(DistillationStrategy):
                 iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
             else:
                 iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
+            if save_every_n is not None:
+                if (b_idx+1) % save_every_n == 0:
+                    self.save_model(os.path.join(self.params.save_path, self.config_name))
         iterator.close()
         if self.verbose and meters is not None:
             meters.display_metrics()

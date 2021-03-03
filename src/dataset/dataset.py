@@ -262,6 +262,7 @@ class SiameseDataLoaderFeatures(DataFeatures):
     sentence_1_features: EmbeddingsFeatures
     sentence_2_features: EmbeddingsFeatures
     tokens_indexes: Union[List[torch.LongTensor], None]
+    src_sentences: Union[List[str], None] = None
 
     def to_device(self, device):
         super().to_device(device)
@@ -278,6 +279,14 @@ class ParallelDataLoaderFeatures:
     def to_device(self, device):
         self.sentence_1_features.to_device(device)
         self.sentence_2_features.to_device(device)
+
+@dataclass
+class DistillationDataLoaderFeatures:
+    features: EmbeddingsFeatures
+    sentences: Union[List[str], None] = None
+
+    def to_device(self, device):
+        self.features.to_device(device)
 
 
 class DataLoader:
@@ -326,7 +335,7 @@ class SmartParaphraseDataloader(DataLoader):
 
     @classmethod
     def build_batches(cls, dataset, batch_size, config, sentence_pairs=False, mode='standard', sbert_format=False):
-        assert mode in ["sense_retrieval", "standard", "parallel", "tatoeba"]
+        assert mode in ["sense_retrieval", "standard", "parallel", "tatoeba", "distillation"]
         if mode == "parallel":
             key = lambda x: max(len(x.get_sent1.strip().split(" ")), len(x.get_sent2.strip().split(" ")))
             dataset = sorted(dataset, key=key)
@@ -341,11 +350,15 @@ class SmartParaphraseDataloader(DataLoader):
         if mode == "standard":
             key = lambda x: max(len(x[0].get_sent1.strip().split(" ")), len(x[0].get_sent2.strip().split(" ")))
             dataset = sorted(dataset, key=key)
-            batches = SmartParaphraseDataloader.smart_batching_standard(dataset, batch_size, config=config, sentence_pairs=sentence_pairs)
+            batches = SmartParaphraseDataloader.smart_batching_standard(dataset, batch_size, config=config, sentence_pairs=sentence_pairs, sbert_format=sbert_format)
         if mode == "tatoeba":
             key = lambda x: len(x[0].strip().split(" ") + x[1].strip().split(" "))
             dataset = sorted(dataset, key=key)
             batches = SmartParaphraseDataloader.smart_batching_parallel(dataset, batch_size)
+        if mode == "distillation":
+            key = lambda x: len(x)
+            dataset = sorted(dataset, key=key)
+            batches = SmartParaphraseDataloader.smart_batching_distillation(dataset, batch_size, config=config, sbert_format=sbert_format)
 
         return cls(batch_size, batches)
 
@@ -529,7 +542,7 @@ class SmartParaphraseDataloader(DataLoader):
         return batches
     
     @staticmethod
-    def smart_batching_standard(sorted_dataset, batch_size, config, sentence_pairs=False):
+    def smart_batching_standard(sorted_dataset, batch_size, config, sentence_pairs=False, sbert_format=False):
         batches = []
         dataset = sorted_dataset
         while len(dataset) > 0:
@@ -588,7 +601,8 @@ class SmartParaphraseDataloader(DataLoader):
                     sentence_1_features = sent_1_features,
                     sentence_2_features = sent_2_features,
                     labels = batch_labels,
-                    tokens_indexes=None
+                    tokens_indexes=None,
+                    src_sentences=sentences_1 if sbert_format else None
                 )
 
             else:
@@ -617,8 +631,10 @@ class SmartParaphraseDataloader(DataLoader):
     def smart_batching_parallel(sorted_dataset, batch_size, config, sbert_format=False):
         batches = []
         dataset = sorted_dataset
-        for i in range(0, len(dataset), batch_size):
-            batch = dataset[i:i+batch_size]           
+        while len(dataset) > 0:
+            to_take = min(batch_size, len(dataset))
+            select = random.randint(0, len(dataset)-to_take)
+            batch = dataset[select:select+to_take]              
             
             src_sentences = []
             tgt_sentences = []
@@ -648,8 +664,7 @@ class SmartParaphraseDataloader(DataLoader):
                 #return_token_type_ids=True,
                 return_tensors='pt'
             )
-
-            
+ 
             sent_1_features = EmbeddingsFeatures.from_dict(encoded_dict_1)
             sent_2_features = EmbeddingsFeatures.from_dict(encoded_dict_2)
 
@@ -659,5 +674,45 @@ class SmartParaphraseDataloader(DataLoader):
                 src_sentences=src_sentences if sbert_format else None
             )
             batches.append(d)
+
+            del dataset[select:select+to_take]
+
+        return batches
+
+    @staticmethod
+    def smart_batching_distillation(sorted_dataset, batch_size, config, sbert_format=False):
+        batches = []
+        dataset = sorted_dataset
+        while len(dataset) > 0:
+            to_take = min(batch_size, len(dataset))
+            select = random.randint(0, len(dataset)-to_take)
+            batch = dataset[select:select+to_take]             
+            
+            all_sentences = []
+            for example in batch:
+                all_sentences.append(example)
+
+            random.shuffle(all_sentences) 
+         
+            encoded_dict = config.tokenizer(
+                text=all_sentences,
+                add_special_tokens=True,
+                padding='longest',
+                truncation=True,
+                max_length=config.sequence_max_len,
+                return_attention_mask=True,
+                #return_token_type_ids=True,
+                return_tensors='pt'
+            )
+
+            features = EmbeddingsFeatures.from_dict(encoded_dict)
+
+            d = DistillationDataLoaderFeatures(
+                features = features,
+                sentences= all_sentences if sbert_format else None
+            )
+            batches.append(d)
+
+            del dataset[select:select+to_take]
 
         return batches

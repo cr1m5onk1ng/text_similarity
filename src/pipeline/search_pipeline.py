@@ -4,6 +4,7 @@ from typing import Dict, List, Union
 import torch
 from torch import nn
 import torch.nn.functional as F
+import time
 import hnswlib
 
 class Pipeline:
@@ -55,20 +56,19 @@ class SentenceMiningPipeline(SearchPipeline):
             corpus_chunk = self.corpus[corpus_index:self.corpus_chunk_size]
             if isinstance(self.corpus, list):
                 print("##### Encoding corpus embeddings. This may take a while #####")
+                start_time = time.time()
                 if isinstance(self.model, SiameseSentenceEmbedder):
                     corpus_chunk = self.model.encode_text(corpus_chunk)
                 else:
                     corpus_chunk = self.model.encode(corpus_chunk, batch_size=16, convert_to_numpy=False, convert_to_tensor=True)
-                print("#### Corpus encoded! ####")
-                print(f"Corpus shape: {corpus_chunk.shape}")
+                end_time = time.time()
+                print("#### Corpus encoded in {:.3f} seconds! ####".format(end_time - start_time))
                 print()
             for query_idx, query_embedding in enumerate(query_embeddings):
                 # expand to corpus dimension to calculate similarity scores
                 # with all the corpus sentences
-                print(f"Query dimension: {query_embeddings.shape}")
                 query_embedding = query_embedding.unsqueeze(0).expand_as(corpus_chunk)
                 scores = F.cosine_similarity(query_embedding, corpus_chunk, dim=-1)
-                print(f"Scores dimension: {scores.shape}")
                 top_scores = torch.topk(scores, min(max_num_results, len(queries)), sorted=False)
                 print(f"Top candidates indexes: {top_scores[1]}")
                 if return_embeddings:

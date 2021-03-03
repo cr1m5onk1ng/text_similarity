@@ -1,3 +1,5 @@
+from src.dataset.distillation_dataset import DistillationDataset
+from src.dataset.entailment_dataset import EntailmentDataset
 from sentence_transformers.SentenceTransformer import SentenceTransformer
 from src.utils.metrics import EmbeddingSimilarityMeter
 from src.dataset.sts_dataset import StsDataset
@@ -30,19 +32,20 @@ if __name__ == '__main__':
         parser.add_argument('--teacher_model', type=str, dest="teacher_model", default="sentence-transformers/quora-distilbert-multilingual")
         parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="trained_models/sencoder-bert-nli-sts")
         parser.add_argument('--max_sentences', type=float, dest="max_sentences", default=300000)
-        parser.add_argument('--layers', type=tuple, dest="layers", default=None)
-        parser.add_argument('--save_path', dest="save_path", type=str, default="./trained_models")
+        parser.add_argument('--layers', type=list, dest="layers", default=None)
+        parser.add_argument('--save_path', dest="save_path", type=str, default="./output")
         parser.add_argument('--save_every_n', dest="save_every_n", type=int, default=50000)
 
         args = parser.parse_args()
 
-        train_langs = ['ja', 'fr', 'de', 'nl', 'es', 'it']
-        dev_langs = ['fr', 'it', 'nl', 'es']
-        train_paths = [f"../data/parallel-sentences/TED2020-en-{l}-train.tsv.gz" for l in train_langs]
-        valid_paths = [f"../data/sts/STS2017-extended/STS.{l}-en.txt" for l in dev_langs]
-        #train_dataset = ParallelDataset.build_dataset(train_paths, max_examples=args.max_sentences, skip_header=True)
-        #train_dataset.add_dataset("../data/jesc/train", max_examples=args.max_sentences, skip_header=True)
-        #print(f"Number of examples: {len(train_dataset)}")
+        dev_langs_from = ['fr', 'it', 'nl', 'es', 'en']
+        dev_langs_to =  ['ar', 'de', 'tr']
+        valid_paths = [f"../data/sts/STS2017-extended/STS.{l}-en.txt" for l in dev_langs_from]
+        valid_paths += [f"../data/sts/STS2017-extended/STS.en-{l}.txt" for l in dev_langs_to]
+        #train_dataset = EntailmentDataset.build_dataset("../data/nli/AllNLI.tsv")
+        #train_dataset.add_dataset("../data/jsnli/train_w_filtering.tsv")
+        #distillation_dataset = DistillationDataset.build_dataset([train_dataset])
+        #print(f"Number of training examples: {len(distillation_dataset)}")
         valid_dataset = StsDataset.build_multilingual(valid_paths)
        
         model_config = config.ModelParameters(
@@ -70,10 +73,11 @@ if __name__ == '__main__':
         print("Done.")
 
         print("Loading training dataloader...")
-        train_dataloader = load_file("../dataset/cached/ted_train_multi-dmbert-to-dmbert-bs12")
+        train_dataloader = load_file("../dataset/cached/distillation-nli-jnli-dmbert")
         #print(f"Data loader sample {train_dataloader[512].src_sentences} ")
-        #train_dataloader = SmartParaphraseDataloader.build_batches(train_dataset, args.batch_size, mode="parallel", config=configuration_student, sbert_format=True)
-        #save_file(train_dataloader, "../dataset/cached", "ted_train_multi-dmbert-to-dmbert-bs12")
+        #train_dataloader = SmartParaphraseDataloader.build_batches(distillation_dataset, args.batch_size, mode="distillation", config=configuration_student, sbert_format=True)
+        #save_file(train_dataloader, "../dataset/cached", "distillation-nli-jnli-dmbert")
+        #print(f"Data loader sample {train_dataloader[512].sentences} ")
         print("Done.")
         
         teacher_model = SentenceTransformer(args.teacher_model)
@@ -108,7 +112,7 @@ if __name__ == '__main__':
             model=student_model,
             teacher=teacher_model,
             layers=args.layers,
-            multilingual=True,
+            multilingual=False,
             train_dataloader=train_dataloader,
             steps=steps,
             warm_up_steps=10000,

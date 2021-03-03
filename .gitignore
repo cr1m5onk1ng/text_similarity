@@ -8,4 +8,6 @@ build
 src/embeddings
 tests
 training/results
+src/compression/output/
+src/compression/dataset
 src/*/__pycache__

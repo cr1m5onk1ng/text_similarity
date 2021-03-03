@@ -37,6 +37,7 @@ class Learner:
         accumulation_steps: int = 1,
         warm_up_steps: int = 0,
         fp16: bool = True,
+        use_tpu = False,
         max_grad_norm: int = 1,
         use_mean_loss: bool = False,
         metrics: Union[Dict[str, List[AverageMeter]], None] = None,
@@ -51,11 +52,14 @@ class Learner:
         self.accumulation_steps = accumulation_steps
         self.max_grad_norm = max_grad_norm
         self.fp16 = fp16
+        self.use_tpu = use_tpu
         self.use_mean_loss = use_mean_loss
         self.metrics = metrics
         self.scaler = None
         self.verbose = verbose
         self.eval_in_train = eval_in_train
+        if self.use_tpu:
+            self.fp16 = False
         if self.fp16:
             self.scaler = amp.GradScaler() 
         self.optimizer = Learner.set_up_optimizer(self.model, self.params.lr)
@@ -107,6 +111,10 @@ class Learner:
 
         #Saving parameters
         torch.save(self.params, os.path.join(path, "training_params.bin"))
+    
+    def _reduce_fn(vals):
+        # take average
+        return sum(vals) / len(vals)
 
     def step(self, data, b_idx):
         model_output = self.model(data)
@@ -117,8 +125,7 @@ class Learner:
         if self.accumulation_steps > 1:
             loss = loss / self.accumulation_steps
         loss.backward()
-        if self.max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
         if (b_idx + 1) % self.accumulation_steps == 0:
             self.optimizer.step()
         return loss, logits
@@ -130,17 +137,41 @@ class Learner:
             loss = model_output.loss
             if hasattr(model_output, "predictions"):
                 logits = model_output.predictions
+        if self.accumulation_steps > 1:
+                loss = loss / self.accumulation_steps
         scale_before_step = self.scaler.get_scale()
         self.scaler.scale(loss).backward()
-        if self.max_grad_norm is not None:
-            self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+        self.scaler.unscale_(self.optimizer)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
   
         return loss, logits, scale_before_step
+
+    def _tpu_step(self, data, b_idx, multi_core=False):
+        model_output = self.model(data)
+        loss = model_output.loss
+        logits = None
+        if hasattr(model_output, "predictions"):
+            logits = model_output.predictions
+        if self.accumulation_steps > 1:
+            loss = loss / self.accumulation_steps
+        loss.backward()
+        if self.max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        if (b_idx + 1) % self.accumulation_steps == 0:
+            xm.optimizer_step(self.optimizer, barrier = not multi_core)
+        return loss, logits
+        
       
     def train_fn(self, data_loader):
+        if self.use_tpu:
+            try:
+                import torch_xla 
+                import torch_xla.core.xla_model as xm
+            except:
+                ImportError("Pytorch XLA is not available")
+            self.device = xm.xla_device()
         losses = AverageMeter("loss")
         if self.metrics is not None:
             meters = Metrics(*self.metrics["training"])
@@ -152,16 +183,16 @@ class Learner:
         results = []
         for b_idx, data in enumerate(iterator):
             data.to_device(self.params.device)
-            if self.accumulation_steps == 1 and b_idx == 0:
-                self.optimizer.zero_grad()
             skip_scheduler = False
-            if self.fp16:
+            if self.use_tpu:
+                loss, logits = self._tpu_step(data, b_idx)
+            elif self.fp16:
                 loss, logits, scale_before_step = self.mixed_precision_step(data, b_idx)
                 skip_scheduler = self.scaler.get_scale() != scale_before_step
             else:
                loss, logits = self.step(data, b_idx)
 
-            if b_idx > 0:
+            if (b_idx + 1) % self.accumulation_steps == 0:
                 self.optimizer.zero_grad()
             
             if self.scheduler is not None:
@@ -175,13 +206,16 @@ class Learner:
                         logits = logits.detach().cpu().numpy()
                         for m in meters.metrics:
                             m.update(logits, labels, n=data_loader.get_batch_size)
+                    if not self.use_tpu:
+                        iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+            if not self.use_tpu:
+                if meters is not None:
                     iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
-            if meters is not None:
-                iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
-            else:
-                iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
-        iterator.close()
-        if self.verbose and meters is not None:
+                else:
+                    iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
+        if not self.use_tpu:
+            iterator.close()
+        if self.verbose and meters is not None and not self.use_tpu:
             meters.display_metrics()
         results = {"loss": losses.avg}
         if meters is not None:
@@ -235,53 +269,5 @@ class Learner:
                 m.reset()
         return results
 
-    def eval_prune(self, data_loader):
-        pass
-
-    def evaluate(self, data_loader, return_predictions=False, convert_to_numpy=False):
-        if self.metrics is not None:
-            meters = Metrics(*self.metrics["validation"], mode="validation", return_predictions=return_predictions)
-        else:
-            meters = None
-        self.model.to(self.device)
-        self.model.eval()
-        results = {}
-        with torch.no_grad():
-            iterator = tqdm(data_loader, total=len(data_loader))
-            for b_idx, data in enumerate(iterator):
-                for k, v in data.items():
-                    if isinstance(v, torch.Tensor):
-                        data[k] = v.to(self.device)
-                    if isinstance(v, dict):
-                        for k1, v1 in v.items():
-                            if isinstance(v1, torch.Tensor):
-                                v[k1] = v1.to(self.device)
-                        data[k] =  v
-                if self.fp16:
-                    with amp.autocast():
-                        logits = self.model.encode(**data)
-                else:
-                    logits = self.model.encode(**data)
-                labels = data["labels"].cpu().numpy()
-                assert logits is not None, "model is returning None, fix it ya jerk"
-                if logits is not None:
-                    logits = logits.detach().cpu()
-                    if convert_to_numpy:
-                        logits = logits.numpy()
-                    if meters is not None:
-                        for m in meters.metrics:
-                            m.update(logits, labels, n=data_loader.get_batch_size)
-                if meters is not None:
-                    iterator.set_postfix(**meters.set_postfix())
-            iterator.close()
-        if self.verbose and meters is not None:
-            meters.display_metrics()
-        if meters is not None:
-            for m in meters.metrics:
-                results[m.get_name] = m.avg
-                if return_predictions:
-                    results[f"predictions_{m.get_name}"] = m.all_predictions
-                    results[f"labels_{m.get_name}"] = m.all_labels
-        return results
 
 

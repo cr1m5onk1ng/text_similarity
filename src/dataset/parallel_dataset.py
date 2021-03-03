@@ -1,6 +1,6 @@
 import gzip
-from os import pathsep
 from src.dataset.dataset import ParaphraseExample
+import random
 
 class ParallelExample(ParaphraseExample):
     def __init__(self, sent1, sent2, **kwargs):
@@ -17,20 +17,14 @@ class ParallelDataset():
     def __len__(self):
         return len(self.examples)
 
-    @property
-    def get_tgt_sentences(self):
-        return self.tgt_sentences
-
-    @property
-    def get_src_sentences(self):
-        return self.src_sentences
-
     @staticmethod
-    def _build_collate(path, max_examples):
+    def _build_collate(path, max_examples, skip_header=False):
         examples = []
         if max_examples is not None:
             cnt = 0
         with gzip.open(path, 'rt', encoding='utf8') if path.endswith('.gz') else open(path, 'r', encoding='utf8') as f:
+            if skip_header:
+                next(f)
             for line in f:
                 if max_examples is not None:
                     cnt+=1
@@ -43,9 +37,15 @@ class ParallelDataset():
                     examples.append(ParallelExample(src_sentence, tgt_sentence))
         return examples
 
+    def add_dataset(self, path, max_examples=None, skip_header=False):
+        self.examples.extend(ParallelDataset._build_collate(path, max_examples, skip_header))
+
     @classmethod
-    def build_dataset(cls, filepaths, max_examples=None):
+    def build_dataset(cls, filepaths, max_examples=None, skip_header=False):
+        if isinstance(filepaths, str):
+            filepaths = [filepaths]
         examples = []
         for filepath in filepaths:
-            examples.extend(ParallelDataset._build_collate(filepath, max_examples=max_examples))
+            examples.extend(ParallelDataset._build_collate(filepath, max_examples=max_examples, skip_header=skip_header))
+        random.shuffle(examples)
         return cls(examples)

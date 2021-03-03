@@ -79,7 +79,7 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
                     add_special_tokens=True,
                     padding='longest',
                     truncation=True,
-                    max_length=config.CONFIG.sequence_max_len,
+                    max_length=self.params.sequence_max_len,
                     return_attention_mask=True,
                     return_token_type_ids=True,
                     return_tensors='pt'

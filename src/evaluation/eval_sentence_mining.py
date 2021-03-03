@@ -40,10 +40,11 @@ if __name__ == "__main__":
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=256)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
     parser.add_argument('--model', type=str, dest="model", default="sentence-transformers/quora-distilbert-multilingual")
-    parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="../training/trained_models/sencoder-xlmrp-dmbert-ted-multi")
+    parser.add_argument('--custom_sbert', type=str, dest="custom_sbert", default="../compression/output/distilbert-quora-multilingual-3-layers")
+    parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="../training/trained_models/sencoder-dmbert-quora-to-dmbert-ted-jesc-multi")
     parser.add_argument('--perc', type=float, dest="corpus_percentage", default=0.005)
     parser.add_argument('--nq', type=int, dest="num_queries", default=10)
-    parser.add_argument('--topk', type=int, dest="topk", default=5)
+    parser.add_argument('--topk', type=int, dest="topk", default=1)
     parser.add_argument('--sbert', type=bool, dest="use_sbert",default=False)
     args = parser.parse_args()
 
@@ -66,7 +67,10 @@ if __name__ == "__main__":
     embedder = transformers.AutoModel.from_pretrained(configuration.model, config=embedder_config)
 
     if args.use_sbert:
-        model = SentenceTransformer(args.model)
+        if args.custom_sbert is not None:
+            model = SentenceTransformer(args.custom_sbert)
+        else:
+            model = SentenceTransformer(args.model)
     else:
         model = SiameseSentenceEmbedder.from_pretrained(args.pretrained_model_path)
 

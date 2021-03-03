@@ -55,3 +55,16 @@ class EntailmentDataset(Dataset):
         print(f"Number of examples: {len(examples)}")
         return cls(examples, labels)
 
+    def add_dataset(self, path):
+        label2class = {"contradiction": 0, "entailment": 1, "neutral": 2}
+        examples = []
+        with open(path, "r", encoding="utf8") as f:
+            for line in f:
+                label, sent1, sent2 = line.strip().split("\t")
+                label = label2class[label]
+                example = EntailmentExample(sent1, sent2, label)
+                examples.append(example)
+        self.examples.extend(examples)
+        random.shuffle(self.examples)
+                
+

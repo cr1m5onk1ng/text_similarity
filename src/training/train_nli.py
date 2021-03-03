@@ -77,7 +77,7 @@ if __name__ == "__main__":
         tokenizer = transformers.AutoTokenizer.from_pretrained(args.model),
     )
 
-    train_dataset = EntailmentDataset.build_dataset(args.train_path, max_examples=100)
+    train_dataset = EntailmentDataset.build_dataset(args.train_path, max_examples=1000)
     valid_dataset = StsDataset.build_dataset("../data/sts/stsbenchmark.tsv", mode="dev")
     print("Building batches. This may take a while.")
     train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="standard", config=configuration)
