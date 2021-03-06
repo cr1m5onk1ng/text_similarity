@@ -1,8 +1,10 @@
+from src.models.Pooling import Pooling
+from src.models.Transformer import Transformer
 from src.utils.metrics import EmbeddingSimilarityMeter
 from torch._C import device
 from src.evaluation.evaluators import ParaphraseEvaluator
 from src.dataset.sts_dataset import StsDataset
-from src.models.sentence_encoder import SiameseSentenceEmbedder
+from src.models.sentence_encoder import SentenceTransformerWrapper, SiameseSentenceEmbedder
 from src.modules.pooling import *
 from src.configurations import config
 from sklearn.metrics.pairwise import paired_cosine_distances, paired_euclidean_distances, paired_manhattan_distances
@@ -24,12 +26,12 @@ if __name__ == "__main__":
     parser.add_argument('--dp', type=float, dest="dropout", default=0.1)
     parser.add_argument('--bs', type=int, dest="batch_size", default=16)
     parser.add_argument('--save_path', dest="save_path", type=str, default="../evaluation/results")
-    parser.add_argument('--pretrained_path', dest="pretrained_path", type=str, default="../training/trained_models/sencoder-bert-nli-sts-paws-contrastive")
+    parser.add_argument('--pretrained_path', dest="pretrained_path", type=str, default="../compression/output/pruned_12_600")
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
     parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
-    parser.add_argument('--model', type=str, dest="model", default="bert-base-cased")
+    parser.add_argument('--model', type=str, dest="model", default="bert-base-uncased")
 
     args = parser.parse_args()
 
@@ -56,19 +58,14 @@ if __name__ == "__main__":
     valid_dataloader = SmartParaphraseDataloader.build_batches(valid_dataset, args.batch_size, mode="standard", config=configuration)
     print("Done.")
 
-    embedder_config = transformers.AutoConfig.from_pretrained(configuration.model)
-    embedder = transformers.AutoModel.from_pretrained(configuration.model, config=embedder_config)
+    #embedder = Transformer(args.pretrained_path)
+    #pooler = Pooling(args.pretrained_path)
 
-    model = SiameseSentenceEmbedder(
-        params = configuration,
-        context_embedder=embedder,
+    model = SentenceTransformerWrapper.load_pretrained(
+        args.pretrained_path,
         loss = CosineSimilarityLoss,
-        pooling_strategy = AvgPoolingStrategy,
-        pooler = EmbeddingsPooler,
         merge_strategy = EmbeddingsSimilarityCombineStrategy
     )
-
-    model.load_pretrained(args.pretrained_path)
 
     metrics = {"validation": [EmbeddingSimilarityMeter]}
 
@@ -79,8 +76,7 @@ if __name__ == "__main__":
          device = args.device,
          metrics = metrics,
          fp16 = args.mixed_precision,
-         verbose = True,
-         return_predictions= False
+         verbose = True
     )
     print(f"Running evaluation for model: {configuration.model_parameters.model_name}")
     evaluator.evaluate()

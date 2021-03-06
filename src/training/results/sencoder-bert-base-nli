@@ -1,7 +1,7 @@
- ------- Running training for model: test with config: test -------- 
+ ------- Running training for model: sencoder-bert-base-nli with config: sencoder-bert-base-nli -------- 
 
 Params: batch size: 16; number of epochs: 1; frozen weights: False; pretrained embeddings: False
 Model params: hidden size: 2304; lr: 2e-05; merge strategy: SentenceBertCombineStrategy()
-training > epoch: 1; loss: 1.117677126611982; accuracy: 0.29464285714285715; 
+training > epoch: 1; loss: 0.5955916345387737; accuracy: 0.7512531844429348; 
 
 

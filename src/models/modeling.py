@@ -45,7 +45,10 @@ class BaseEncoderModel(nn.Module):
         return self.params.model_parameters.model_name
 
     def set_hidden_size(self, paraphrase=True):
-        embedder_size = self.context_embedder.embedding_size
+        if isinstance(self.context_embedder, SentenceTransformer):
+            embedder_size = self.context_embedder.get_sentence_embedding_dimension()
+        else:
+            embedder_size = self.context_embedder.embedding_size
         pretrained_size = self.params.pretrained_embeddings_dim
         hidden_size = embedder_size if \
                     not paraphrase else \

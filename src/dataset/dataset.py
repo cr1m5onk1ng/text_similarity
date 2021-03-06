@@ -1,3 +1,4 @@
+from sentence_transformers.SentenceTransformer import SentenceTransformer
 import src.configurations.config as config
 from sklearn.model_selection import StratifiedKFold
 from collections import OrderedDict
@@ -7,7 +8,7 @@ import json
 import string
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Union, List, Dict
+from typing import Any, Union, List, Dict
 import random
 from tqdm import tqdm
 
@@ -173,32 +174,18 @@ class ParaphraseProcessor():
         return DocumentCorpusDataset(positive_examples, negative_examples)
 
 
-class EmbeddingsFeatures(dict):
+class EmbeddingsFeatures:
 
-    def __init__(self, input_ids, token_type_ids, attention_mask, *args, **kwargs):
+    def __init__(self, input_ids, attention_mask, *args, **kwargs):
         super(EmbeddingsFeatures, self).__init__(*args, **kwargs)
         self.input_ids = input_ids
-        self.token_type_ids = token_type_ids
         self.attention_mask = attention_mask
-
-    def __getitem__(self, key):
-        return getattr(self, key)
-
-    def __contains__(self, key: str) -> bool:
-        if hasattr(self, key):
-            return True
-        return False
 
 
     @classmethod
     def from_dict(cls, dictionary, *args, **kwargs):
-        if "token_type_ids" in dictionary:
-            token_ids = dictionary["token_type_ids"]
-        else:
-            token_ids = None
         return cls(
             dictionary["input_ids"],
-            token_ids,
             dictionary["attention_mask"],
             *args, 
             **kwargs
@@ -207,14 +194,16 @@ class EmbeddingsFeatures(dict):
     def to_dict(self):
         return {
             "input_ids": self.input_ids,
-            "token_type_ids": self.token_type_ids,
             "attention_mask": self.attention_mask
         }
 
-    def to_device(self, device):
+    def generate_labels(self, model):
+        with torch.no_grad():
+            embeddings = model.encode(self)
+        return embeddings
+
+    def to(self, device):
         self.input_ids = self.input_ids.to(device)
-        if self.token_type_ids is not None:
-            self.token_type_ids = self.token_type_ids.to(device)
         self.attention_mask = self.attention_mask.to(device)
 
 
@@ -233,7 +222,7 @@ class WordFeatures(EmbeddingsFeatures):
 class DataFeatures:
     labels: torch.Tensor
 
-    def to_device(self, device):
+    def to(self, device):
         self.labels = self.labels.to(device)
 
 
@@ -241,9 +230,9 @@ class DataFeatures:
 class DataLoaderFeatures(DataFeatures):
     embeddings_features: EmbeddingsFeatures
 
-    def to_device(self, device):
-        super().to_device(device)
-        self.embeddings_features.to_device(device)
+    def to(self, device):
+        super().to(device)
+        self.embeddings_features.to(device)
         
 
 @dataclass
@@ -251,10 +240,10 @@ class WordClassifierFeatures(DataFeatures):
     w1_features: WordFeatures
     w2_features: WordFeatures
 
-    def to_device(self, device):
-        super().to_device(device)
-        self.w1_features.to_device(device)
-        self.w2_features.to_device(device)
+    def to(self, device):
+        super().to(device)
+        self.w1_features.to(device)
+        self.w2_features.to(device)
     
 
 @dataclass
@@ -264,29 +253,39 @@ class SiameseDataLoaderFeatures(DataFeatures):
     tokens_indexes: Union[List[torch.LongTensor], None]
     src_sentences: Union[List[str], None] = None
 
-    def to_device(self, device):
-        super().to_device(device)
-        self.sentence_1_features.to_device(device)
-        self.sentence_2_features.to_device(device)
+    def to(self, device):
+        super().to(device)
+        self.sentence_1_features.to(device)
+        self.sentence_2_features.to(device)
 
 
 @dataclass
 class ParallelDataLoaderFeatures:
-    sentence_1_features: EmbeddingsFeatures
-    sentence_2_features: EmbeddingsFeatures
-    src_sentences: List[str] = None
+    sentence_1_features: Union[EmbeddingsFeatures, Dict]
+    sentence_2_features: Union[EmbeddingsFeatures, Dict]
 
-    def to_device(self, device):
-        self.sentence_1_features.to_device(device)
-        self.sentence_2_features.to_device(device)
+    def to(self, device):
+        if isinstance(self.sentence_1_features, dict):
+            for k in self.sentence_1_features:
+                self.sentence_1_features[k] = self.sentence_1_features[k].to(device)
+            for k in self.sentence_2_features:
+                self.sentence_2_features[k] = self.sentence_2_features[k].to(device)
+        else:
+            self.sentence_1_features.to(device)
+            self.sentence_2_features.to(device)
+
+    def generate_labels(self, model):
+        embeddings = self.sentence_1_features.generate_labels(model)
+        return embeddings
+
 
 @dataclass
 class DistillationDataLoaderFeatures:
     features: EmbeddingsFeatures
     sentences: Union[List[str], None] = None
 
-    def to_device(self, device):
-        self.features.to_device(device)
+    def to(self, device):
+        self.features.to(device)
 
 
 class DataLoader:
@@ -339,7 +338,7 @@ class SmartParaphraseDataloader(DataLoader):
         if mode == "parallel":
             key = lambda x: max(len(x.get_sent1.strip().split(" ")), len(x.get_sent2.strip().split(" ")))
             dataset = sorted(dataset, key=key)
-            batches = SmartParaphraseDataloader.smart_batching_parallel(dataset, batch_size, config=config, sbert_format=sbert_format)
+            batches = SmartParaphraseDataloader.smart_batching_parallel(dataset, batch_size, config=config)
         if mode == "sense_retrieval":
             key = lambda x: max(len(x[0].get_sent1.strip().split(" ")), len(x[0].get_sent2.strip().split(" ")))
             dataset = sorted(dataset, key=key)
@@ -358,7 +357,7 @@ class SmartParaphraseDataloader(DataLoader):
         if mode == "distillation":
             key = lambda x: len(x)
             dataset = sorted(dataset, key=key)
-            batches = SmartParaphraseDataloader.smart_batching_distillation(dataset, batch_size, config=config, sbert_format=sbert_format)
+            batches = SmartParaphraseDataloader.smart_batching_distillation(dataset, batch_size, config=config)
 
         return cls(batch_size, batches)
 
@@ -597,13 +596,21 @@ class SmartParaphraseDataloader(DataLoader):
                 sent_1_features = EmbeddingsFeatures.from_dict(encoded_dict_1)
                 sent_2_features = EmbeddingsFeatures.from_dict(encoded_dict_2)
 
-                d = SiameseDataLoaderFeatures(
-                    sentence_1_features = sent_1_features,
-                    sentence_2_features = sent_2_features,
-                    labels = batch_labels,
-                    tokens_indexes=None,
-                    src_sentences=sentences_1 if sbert_format else None
-                )
+                if sbert_format:
+                    d = SiameseDataLoaderFeatures(
+                        sentence_1_features = encoded_dict_1,
+                        sentence_2_features = encoded_dict_2 ,
+                        labels = batch_labels,
+                        tokens_indexes=None,
+                    )
+                    
+                else:
+                    d = SiameseDataLoaderFeatures(
+                        sentence_1_features = sent_1_features,
+                        sentence_2_features = sent_2_features ,
+                        labels = batch_labels,
+                        tokens_indexes=None,
+                    )
 
             else:
                 encoded_dict = config.tokenizer(
@@ -620,7 +627,7 @@ class SmartParaphraseDataloader(DataLoader):
                 features = EmbeddingsFeatures.from_dict(encoded_dict)
 
                 d = DataLoaderFeatures(
-                        embeddings_feature = features,
+                        embeddings_features = features,
                         labels = batch_labels
                     )
 
@@ -628,7 +635,7 @@ class SmartParaphraseDataloader(DataLoader):
         return batches
     
     @staticmethod
-    def smart_batching_parallel(sorted_dataset, batch_size, config, sbert_format=False):
+    def smart_batching_parallel(sorted_dataset, batch_size, config):
         batches = []
         dataset = sorted_dataset
         while len(dataset) > 0:
@@ -641,9 +648,8 @@ class SmartParaphraseDataloader(DataLoader):
             for example in batch:
                 src_sentences.append(example.get_sent1)
                 tgt_sentences.append(example.get_sent2)
-            
-         
-            encoded_dict_1 = config.tokenizer(
+
+            encoded_dict_src = config.tokenizer(
                 text=src_sentences,
                 add_special_tokens=True,
                 padding='longest',
@@ -653,8 +659,8 @@ class SmartParaphraseDataloader(DataLoader):
                 #return_token_type_ids=True,
                 return_tensors='pt'
             )
-
-            encoded_dict_2 = config.tokenizer_student(
+            
+            encoded_dict_tgt = config.tokenizer_student(
                 text=tgt_sentences,
                 add_special_tokens=True,
                 padding='longest',
@@ -665,14 +671,14 @@ class SmartParaphraseDataloader(DataLoader):
                 return_tensors='pt'
             )
  
-            sent_1_features = EmbeddingsFeatures.from_dict(encoded_dict_1)
-            sent_2_features = EmbeddingsFeatures.from_dict(encoded_dict_2)
+            features_src = EmbeddingsFeatures.from_dict(encoded_dict_src)
+            features_tgt = EmbeddingsFeatures.from_dict(encoded_dict_tgt)
 
             d = ParallelDataLoaderFeatures(
-                sentence_1_features = sent_1_features,
-                sentence_2_features = sent_2_features,
-                src_sentences=src_sentences if sbert_format else None
+                sentence_1_features = features_src,
+                sentence_2_features = features_tgt
             )
+
             batches.append(d)
 
             del dataset[select:select+to_take]
@@ -680,7 +686,7 @@ class SmartParaphraseDataloader(DataLoader):
         return batches
 
     @staticmethod
-    def smart_batching_distillation(sorted_dataset, batch_size, config, sbert_format=False):
+    def smart_batching_distillation(sorted_dataset, batch_size, config):
         batches = []
         dataset = sorted_dataset
         while len(dataset) > 0:
@@ -707,12 +713,9 @@ class SmartParaphraseDataloader(DataLoader):
 
             features = EmbeddingsFeatures.from_dict(encoded_dict)
 
-            d = DistillationDataLoaderFeatures(
-                features = features,
-                sentences= all_sentences if sbert_format else None
-            )
-            batches.append(d)
+            batches.append(features)
 
             del dataset[select:select+to_take]
 
         return batches
+

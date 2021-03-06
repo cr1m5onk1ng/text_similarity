@@ -32,7 +32,7 @@ if __name__ == "__main__":
     parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
-    parser.add_argument('--model', type=str, dest="model", default="bert-base-cased")
+    parser.add_argument('--model', type=str, dest="model", default="bert-base-uncased")
     parser.add_argument('--pooling', type=str, dest="pooling_strategy", default="avg")
     parser.add_argument('--measure', type=str, dest="measure", default="loss")
     parser.add_argument('--direction', type=str, dest="direction", default="minimize")
@@ -51,9 +51,7 @@ if __name__ == "__main__":
     #train_data_loader = load_file("../dataset/cached/nli/train_all_nli_16")
     #valid_data_loader = load_file("../dataset/cached/nli/valid_xnli_en_16")
 
-
     metrics = {"training": [AccuracyMeter], "validation": [EmbeddingSimilarityMeter]}
-
 
     model_config = config.SenseModelParameters(
         model_name = args.config_name,
@@ -77,14 +75,15 @@ if __name__ == "__main__":
         tokenizer = transformers.AutoTokenizer.from_pretrained(args.model),
     )
 
-    train_dataset = EntailmentDataset.build_dataset(args.train_path, max_examples=1000)
-    valid_dataset = StsDataset.build_dataset("../data/sts/stsbenchmark.tsv", mode="dev")
-    print("Building batches. This may take a while.")
+    train_dataset = EntailmentDataset.build_dataset(args.train_path, max_examples=None)
+    print(f"Number of training examples: {len(train_dataset)}")
+    #valid_dataset = StsDataset.build_dataset("../data/sts/stsbenchmark.tsv", mode="dev")
+    #print("Building batches. This may take a while.")
     train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="standard", config=configuration)
-    valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="standard", config=configuration)
+    #valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="standard", config=configuration)
     print("Done.")
     #save_file(train_data_loader, "../dataset/cached/nli", "train_all_nli_16")
-    #save_file(valid_data_loader, "../dataset/cached/nli", "valid_xnli_en_16")
+    #save_file(valid_data_loader, "../dataset/cached/nli", "valid_sts_en_16")
 
     embedder_config = transformers.AutoConfig.from_pretrained(configuration.model)
     embedder = transformers.AutoModel.from_pretrained(configuration.model, config=embedder_config)
@@ -113,12 +112,13 @@ if __name__ == "__main__":
 
     trainer = Trainer(
         args.config_name, 
-        train_data_loader, 
-        valid_data_loader, 
-        args.epochs, 
+        train_dataloader=train_data_loader, 
+        valid_dataloader=None, 
+        epochs=args.epochs, 
         configuration=learner, 
         direction=args.direction, 
-        measure=args.measure
+        measure=args.measure,
+        eval_in_train=False
     )
 
     trainer.execute(write_results=True)

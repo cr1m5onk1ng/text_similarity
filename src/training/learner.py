@@ -105,7 +105,7 @@ class Learner:
         else:
             self.model.save_pretrained(path)
 
-        d['optimizer_state_dict'] = self.optimizer.state_dict()
+        #d['optimizer_state_dict'] = self.optimizer.state_dict()
 
         torch.save(d, os.path.join(path, f"{self.config_name}_optimizer_state.bin"))
 

@@ -2,13 +2,9 @@
 
 Params: batch size: 16; number of epochs: 4; frozen weights: False; pretrained embeddings: False
 Model params: hidden size: 2304; lr: 2e-05; merge strategy: EmbeddingsSimilarityCombineStrategy()
-training > epoch: 1; loss: 0.04214850303509997; embed_sim: 0.741067263513896; 
-validation > epoch: 1; loss: 0.028736188472744; embed_sim: 0.8171938026678188; 
-training > epoch: 2; loss: 0.015745249838154347; embed_sim: 0.8608718985935963; 
-validation > epoch: 2; loss: 0.027607100807685168; embed_sim: 0.8193397331773205; 
-training > epoch: 3; loss: 0.008744797100532904; embed_sim: 0.9132421480426162; 
-validation > epoch: 3; loss: 0.027478883459054408; embed_sim: 0.821191371256395; 
-training > epoch: 4; loss: 0.006519892224201208; embed_sim: 0.9327230150302969; 
-validation > epoch: 4; loss: 0.028358977951822763; embed_sim: 0.82023489311637; 
+training > epoch: 1; loss: 0.04101504256638388; embed_sim: 0.7601713657885217; 
+training > epoch: 2; loss: 0.015572767096131833; embed_sim: 0.8653826058017535; 
+training > epoch: 3; loss: 0.008707217873436295; embed_sim: 0.9139562797232557; 
+training > epoch: 4; loss: 0.006628217021352611; embed_sim: 0.9325534768086121; 
 
 

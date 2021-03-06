@@ -49,9 +49,9 @@ class WicProcessor(ParaphraseProcessor):
         for line in open(path):
             gold = line.strip()
             if gold == 'T':
-                gold_entries.append(True)
+                gold_entries.append(1)
             elif gold == 'F':
-                gold_entries.append(False)
+                gold_entries.append(0)
         return gold_entries
 
     def get_dataset_json(self, path):

@@ -72,7 +72,7 @@ class ParaphraseEvaluator(Evaluator):
         with torch.no_grad():
             iterator = tqdm(self.data_loader, total=len(self.data_loader))
             for b_idx, data in enumerate(iterator):
-                data.to_device(self.params.device)
+                data.to(self.params.device)
                 if self.fp16:
                     with amp.autocast():
                         embeddings_1 = self.model.encode(data.sentence_1_features)

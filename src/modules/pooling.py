@@ -150,6 +150,14 @@ class EmbeddingsSimilarityCombineStrategy(MergingStrategy):
         return out
 
 
+class SentenceEncodingCombineStrategy(MergingStrategy):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, features: DataLoaderFeatures, pooled: torch.Tensor):
+        return pooled
+
+
 class SentenceBertCombineStrategy(MergingStrategy):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

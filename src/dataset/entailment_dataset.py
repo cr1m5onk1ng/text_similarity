@@ -22,7 +22,8 @@ class EntailmentDataset(Dataset):
         return len(self.examples)
 
     @classmethod
-    def build_dataset(cls, path, max_examples=None, all_nli=True):
+    def build_dataset(cls, path, max_examples=None, all_nli=True, mode="train"):
+        assert mode in ["test", "dev", "train"]
         label2class = {"contradiction": 0, "entailment": 1, "neutral": 2}
         examples = []
         with open(path, 'r', encoding='utf8') as f:
@@ -33,8 +34,8 @@ class EntailmentDataset(Dataset):
             print(f"Loading Dataset from {path}...")
             for line in iterator:
                 if all_nli:
-                    split, _, _, sent1, sent2, label  = line.strip().split("\t")
-                    if split != "train":
+                    split, *_, sent1, sent2, label  = line.strip().split("\t")
+                    if split != mode:
                         continue          
                 else:
                     sent1, sent2, label  = line.strip().split("\t")

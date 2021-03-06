@@ -46,6 +46,7 @@ class WordModelConfiguration(Configuration):
 
 @dataclass
 class ParallelConfiguration(Configuration):
+    teacher_model: torch.nn.Module = None
     tokenizer_student: transformers.AutoTokenizer = None
 
 def load_file(path):

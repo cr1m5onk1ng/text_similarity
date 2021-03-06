@@ -1,14 +1,17 @@
+from src.models.Pooling import Pooling
+from src.models.Transformer import Transformer
+from src import configurations
 from src.dataset.distillation_dataset import DistillationDataset
 from src.dataset.entailment_dataset import EntailmentDataset
 from sentence_transformers.SentenceTransformer import SentenceTransformer
 from src.utils.metrics import EmbeddingSimilarityMeter
 from src.dataset.sts_dataset import StsDataset
-from src.modules.pooling import AvgPoolingStrategy, EmbeddingsPooler, EmbeddingsSimilarityCombineStrategy
+from src.modules.pooling import AvgPoolingStrategy, EmbeddingsPooler, EmbeddingsSimilarityCombineStrategy, SentenceEncodingCombineStrategy
 from src.models.losses import SimpleDistillationLoss
 from src.evaluation.evaluators import ParaphraseEvaluator
 from src.dataset.dataset import SmartParaphraseDataloader
 from torch.utils import data
-from src.models.sentence_encoder import SiameseSentenceEmbedder
+from src.models.sentence_encoder import SentenceTransformerWrapper, SiameseSentenceEmbedder
 from src.modules.model_compression import SentenceEncoderDistiller
 import argparse
 from src.dataset.parallel_dataset import *
@@ -23,16 +26,16 @@ if __name__ == '__main__':
 
         parser.add_argument('--ep', type=int, dest="epochs", default=1)
         parser.add_argument('--name', type=str, dest="config_name")
-        parser.add_argument('--bs', type=int, dest="batch_size", default=12)
+        parser.add_argument('--bs', type=int, dest="batch_size", default=16)
         parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
         parser.add_argument('--embed_dim', type=int, dest="embed_dim", default=768)
         parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
         parser.add_argument('--device', type=str, dest="device", default="cuda")
-        parser.add_argument('--student_model', type=str, dest="student_model", default="distilbert-base-multilingual-cased")
+        parser.add_argument('--student_model', type=str, dest="student_model", default="sentence-transformers/quora-distilbert-multilingual")
         parser.add_argument('--teacher_model', type=str, dest="teacher_model", default="sentence-transformers/quora-distilbert-multilingual")
         parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="trained_models/sencoder-bert-nli-sts")
         parser.add_argument('--max_sentences', type=float, dest="max_sentences", default=300000)
-        parser.add_argument('--layers', type=list, dest="layers", default=None)
+        parser.add_argument('--layers', type=list, dest="layers", default=[1, 3, 5])
         parser.add_argument('--save_path', dest="save_path", type=str, default="./output")
         parser.add_argument('--save_every_n', dest="save_every_n", type=int, default=50000)
 
@@ -42,10 +45,10 @@ if __name__ == '__main__':
         dev_langs_to =  ['ar', 'de', 'tr']
         valid_paths = [f"../data/sts/STS2017-extended/STS.{l}-en.txt" for l in dev_langs_from]
         valid_paths += [f"../data/sts/STS2017-extended/STS.en-{l}.txt" for l in dev_langs_to]
-        #train_dataset = EntailmentDataset.build_dataset("../data/nli/AllNLI.tsv")
+        train_dataset = EntailmentDataset.build_dataset("../data/nli/AllNLI.tsv", max_examples=100)
         #train_dataset.add_dataset("../data/jsnli/train_w_filtering.tsv")
-        #distillation_dataset = DistillationDataset.build_dataset([train_dataset])
-        #print(f"Number of training examples: {len(distillation_dataset)}")
+        distillation_dataset = DistillationDataset.build_dataset(train_dataset, only_src=True)
+        print(f"Number of training examples: {len(train_dataset)}")
         valid_dataset = StsDataset.build_multilingual(valid_paths)
        
         model_config = config.ModelParameters(
@@ -55,7 +58,7 @@ if __name__ == '__main__':
         context_layers = (-1,)
         )
 
-        configuration_student = config.ParallelConfiguration(
+        configuration = config.ParallelConfiguration(
             model_parameters=model_config,
             model = args.student_model,
             sequence_max_len=args.seq_len,
@@ -69,35 +72,35 @@ if __name__ == '__main__':
 
 
         print("Loading validation dataloader...")
-        valid_dataloader = SmartParaphraseDataloader.build_batches(valid_dataset, args.batch_size, mode="standard", config=configuration_student)
+        valid_dataloader = SmartParaphraseDataloader.build_batches(valid_dataset, args.batch_size, mode="standard", config=configuration)
         print("Done.")
 
         print("Loading training dataloader...")
-        train_dataloader = load_file("../dataset/cached/distillation-nli-jnli-dmbert")
-        #print(f"Data loader sample {train_dataloader[512].src_sentences} ")
-        #train_dataloader = SmartParaphraseDataloader.build_batches(distillation_dataset, args.batch_size, mode="distillation", config=configuration_student, sbert_format=True)
-        #save_file(train_dataloader, "../dataset/cached", "distillation-nli-jnli-dmbert")
-        #print(f"Data loader sample {train_dataloader[512].sentences} ")
+        #train_dataloader = load_file("../dataset/cached/distillation-nli-jnli-dmbert")
+        train_dataloader = SmartParaphraseDataloader.build_batches(distillation_dataset, args.batch_size, mode="distillation", config=configuration)
+        save_file(train_dataloader, "../dataset/cached", "distillation-nli-jsnli-dmbert")
         print("Done.")
         
-        teacher_model = SentenceTransformer(args.teacher_model)
+        merge_strategy = SentenceEncodingCombineStrategy
+        loss = SimpleDistillationLoss
 
-        student_embedder_config = transformers.AutoConfig.from_pretrained(args.student_model)
-        student_embedder = transformers.AutoModel.from_pretrained(args.student_model, config=student_embedder_config)
-
-        student_model = SiameseSentenceEmbedder(
-            params = configuration_student,
-            context_embedder=student_embedder,
-            pooling_strategy = AvgPoolingStrategy,
-            pooler = EmbeddingsPooler,
+        teacher_model=SentenceTransformerWrapper.load_pretrained(
+            args.teacher_model,
+            params=configuration,
         )
 
-        steps = len(train_dataloader) * configuration_student.epochs
+        student_model = SentenceTransformerWrapper.load_pretrained(
+            args.student_model,
+            params=configuration,
+            loss=SimpleDistillationLoss(params=configuration, teacher_model=teacher_model)
+        )
+
+        steps = len(train_dataloader) * configuration.epochs
 
         metrics = {"validation": [EmbeddingSimilarityMeter]}
         
         evaluator = ParaphraseEvaluator(
-            params = configuration_student,
+            params = configuration,
             model = student_model,
             data_loader = valid_dataloader,
             device = torch.device(args.device),
@@ -108,11 +111,10 @@ if __name__ == '__main__':
         
         distiller = SentenceEncoderDistiller(
             config_name=args.config_name,
-            params=configuration_student,
+            params=configuration,
             model=student_model,
             teacher=teacher_model,
             layers=args.layers,
-            multilingual=False,
             train_dataloader=train_dataloader,
             steps=steps,
             warm_up_steps=10000,

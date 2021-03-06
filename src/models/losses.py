@@ -3,12 +3,12 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.modules.distance import CosineSimilarity
 from src.configurations import config as config
-from src.configurations.config import ModelParameters
+from src.configurations.config import Configuration, ModelParameters
 from src.dataset.dataset import *
 from src.training.learner import ModelOutput, ClassifierOutput, SimilarityOutput
 
 class Loss(nn.Module):
-    def __init__(self, params: ModelParameters):
+    def __init__(self, params: Configuration):
         super(Loss, self).__init__()
         self.params = params
 
@@ -19,7 +19,7 @@ class Loss(nn.Module):
 class SoftmaxLoss(Loss):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.classifier = nn.Linear(self.params.hidden_size, self.params.num_classes)
+        self.classifier = nn.Linear(self.params.model_parameters.hidden_size*3, self.params.model_parameters.num_classes)
         self.loss_function = nn.CrossEntropyLoss()
 
     def forward(self, hidden_state, features):
@@ -82,7 +82,7 @@ class OnlineContrastiveSimilarityLoss(SimilarityLoss):
         ) 
 
 
-class CosineSimilarityLoss(SimilarityLoss):
+class CosineSimilarityLoss(Loss):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.similarity = nn.CosineSimilarity(dim=-1)
@@ -90,7 +90,11 @@ class CosineSimilarityLoss(SimilarityLoss):
 
     def forward(self, embeddings, features):
         scores = self.similarity(embeddings[0], embeddings[1])
-        loss = self.loss_function(scores, features.labels.view(-1))
+        if isinstance(features, dict):
+            labels = features["labels"]
+        else:
+            labels = features.labels
+        loss = self.loss_function(scores, labels.view(-1))
         return ClassifierOutput(
             loss = loss,
             predictions = embeddings
@@ -102,44 +106,19 @@ class SimpleDistillationLoss(Loss):
     Distillation loss based on a simple MSE loss
     between the teacher and student embeddings
     """
-    def __init__(self, teacher, *args, **kwargs):
+    def __init__(self, teacher_model, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.teacher = teacher
+        self.teacher_model = teacher_model
         self.loss = nn.MSELoss()
 
     def forward(self, student_embeddings, features):
-        ### TODO DEFINE features.src in the DATALOADER
-        teacher_embeddings = self.teacher.encode(features)
-        loss = self.loss(teacher_embeddings, student_embeddings)
+        teacher_embeddings = features.generate_labels(self.teacher_model)
+        loss = self.loss(student_embeddings, teacher_embeddings)
         return ClassifierOutput(
             loss=loss, 
-            predictions=torch.stack(
-                [teacher_embeddings, student_embeddings], 
-                dim=0)
+            predictions=torch.stack([student_embeddings, teacher_embeddings], dim=0)
         )
 
-
-# TODO PENSARE A COME IMPLEMENTARE ATTENTION DISTILLATION SU SBERT
-class TinyBertDistillationloss(Loss):
-    def __init__(self, teacher, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.teacher = teacher
-        self.loss_mse = nn.MSELoss()
-        self.loss_cs = CosineSimilarity(dim=2)
-        self.loss_cs_att = CosineSimilarity(dim=3)
-
-    def forward(self, student_embeddings, features):
-        ### TODO DEFINE features.src in the DATALOADER
-        assert(self.params.output_attention == True)
-        self.teacher.eval()
-        output_teacher = self.teacher.encode(features.src)
-        loss = self.loss(output_teacher, student_embeddings)
-        return ModelOutput(loss=loss)
-
-    def soft_cross_entropy(self, predicts, targets):
-        student_likelihood = torch.nn.functional.log_softmax(predicts, dim=-1)
-        targets_prob = torch.nn.functional.softmax(targets, dim=-1)
-        return (- targets_prob * student_likelihood).sum(dim=-1).mean()
 
 
 class FastDistillationLoss(Loss):

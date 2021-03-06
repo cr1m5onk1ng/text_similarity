@@ -32,6 +32,7 @@ class Trainer:
         early_stopping: bool = False,
         return_predictions: bool = False,
         convert_pred_to_numpy: bool = False,
+        eval_in_train=False,
         model_save_path: str = "trained_models"
         ):
       
@@ -46,6 +47,7 @@ class Trainer:
         self.early_stopping = early_stopping
         self.return_predictions = return_predictions
         self.convert_pred_to_numpy = convert_pred_to_numpy
+        self.eval_in_train=eval_in_train
         self.model_save_path = model_save_path
 
     def execute(self, write_results=False):
@@ -72,22 +74,17 @@ class Trainer:
             print()
             train_res = self.configuration.train_fn(self.train_data_loader)
             if self.configuration.eval_in_train:
-                valid_res = self.configuration.evaluate(
-                    self.valid_data_loader, 
-                    return_predictions=self.return_predictions, 
-                    convert_to_numpy=self.convert_pred_to_numpy
-                )
-            else:
                 valid_res = self.configuration.eval_fn(self.valid_data_loader, return_predictions=self.return_predictions)
-            optim_metric = valid_res[self.measure]
+            optim_metric = valid_res[self.measure] if self.eval_in_train else train_res[self.measure]
             train_res_line = f"training > epoch: {epoch+1}; "
             for metric, value in train_res.items():
                 train_res_line += f"{metric}: {value}; "
-            valid_res_line = f"validation > epoch: {epoch+1}; "
-            for metric, value in valid_res.items():
-                valid_res_line += f"{metric}: {value}; "
+            if self.eval_in_train:
+                valid_res_line = f"validation > epoch: {epoch+1}; "
+                for metric, value in valid_res.items():
+                    valid_res_line += f"{metric}: {value}; "
+                messages.append(valid_res_line)
             messages.append(train_res_line)
-            messages.append(valid_res_line)
             if self.direction == "minimize":
                 if optim_metric < best_metric:
                     best_metric = optim_metric

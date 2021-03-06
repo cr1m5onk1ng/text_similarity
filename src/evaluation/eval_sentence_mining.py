@@ -40,8 +40,8 @@ if __name__ == "__main__":
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=256)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
     parser.add_argument('--model', type=str, dest="model", default="sentence-transformers/quora-distilbert-multilingual")
-    parser.add_argument('--custom_sbert', type=str, dest="custom_sbert", default="../compression/output/distilbert-quora-multilingual-3-layers")
-    parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="../training/trained_models/sencoder-dmbert-quora-to-dmbert-ted-jesc-multi")
+    parser.add_argument('--custom_sbert', type=str, dest="custom_sbert", default="../training/trained_models/distilbert-base-multilingual-cased-en-ja-2021-03-04_16-01-36")
+    parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="../training/trained_models/sencoder-bert-base-nli-sts-to-dmbert-ted-ja")
     parser.add_argument('--perc', type=float, dest="corpus_percentage", default=0.005)
     parser.add_argument('--nq', type=int, dest="num_queries", default=10)
     parser.add_argument('--topk', type=int, dest="topk", default=1)
@@ -63,12 +63,11 @@ if __name__ == "__main__":
         tokenizer = transformers.AutoTokenizer.from_pretrained(args.model)
     )
 
-    embedder_config = transformers.AutoConfig.from_pretrained(configuration.model)
-    embedder = transformers.AutoModel.from_pretrained(configuration.model, config=embedder_config)
-
     if args.use_sbert:
         if args.custom_sbert is not None:
+            print("Loading custom SBERT model...")
             model = SentenceTransformer(args.custom_sbert)
+            print("Done")
         else:
             model = SentenceTransformer(args.model)
     else:
