@@ -110,12 +110,12 @@ class AvgPoolingStrategy(PoolingStrategy):
         mask = mask.unsqueeze(-1).expand(embeddings.size()).float()
         #we zero out the weights corresponding to the zero positions
         # of the mask and we sum over the seq_len dimension
-        out = torch.sum(embeddings * mask, 1)
+        sum_embeddings = torch.sum(embeddings * mask, 1)
         #we sum the values of the mask on the seq_len dimension
         # obtaining the number of tokens in the sequence
         sum_mask = torch.clamp(mask.sum(1), min=1e-9)
         #we take the average
-        embeddings = out/sum_mask 
+        embeddings = sum_embeddings/sum_mask 
         return embeddings
 
 

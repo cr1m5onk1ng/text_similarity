@@ -1,5 +1,5 @@
 from src.pipeline.search_pipeline import SentenceMiningPipeline
-from src.models.sentence_encoder import SiameseSentenceEmbedder
+from src.models.sentence_encoder import SentenceTransformerWrapper, SiameseSentenceEmbedder
 from src.configurations import config
 from src.modules.pooling import *
 from src.models.losses import OnlineContrastiveSimilarityLoss
@@ -8,6 +8,14 @@ import argparse
 import torch
 import transformers
 from sentence_transformers import SentenceTransformer
+
+def mean_pooling(model_output, attention_mask):
+    token_embeddings = model_output[0] #First element of model_output contains all token embeddings
+    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+    sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+    sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+    return sum_embeddings / sum_mask
+
 
 def compare_models(queries: List[str], teacher_results: dict, student_results: dict):
     teacher_hit_sentences = set()
@@ -40,7 +48,6 @@ if __name__ == "__main__":
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=256)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
     parser.add_argument('--model', type=str, dest="model", default="sentence-transformers/quora-distilbert-multilingual")
-    parser.add_argument('--custom_sbert', type=str, dest="custom_sbert", default="../training/trained_models/distilbert-base-multilingual-cased-en-ja-2021-03-04_16-01-36")
     parser.add_argument('--pretrained-model-path', type=str, dest="pretrained_model_path", default="../training/trained_models/sencoder-bert-base-nli-sts-to-dmbert-ted-ja")
     parser.add_argument('--perc', type=float, dest="corpus_percentage", default=0.005)
     parser.add_argument('--nq', type=int, dest="num_queries", default=10)
@@ -64,14 +71,11 @@ if __name__ == "__main__":
     )
 
     if args.use_sbert:
-        if args.custom_sbert is not None:
-            print("Loading custom SBERT model...")
-            model = SentenceTransformer(args.custom_sbert)
-            print("Done")
-        else:
-            model = SentenceTransformer(args.model)
+        print("Loading custom SBERT model...")
+        model = SentenceTransformerWrapper.load_pretrained(args.model, params=configuration)
+        print("Done")
     else:
-        model = SiameseSentenceEmbedder.from_pretrained(args.pretrained_model_path)
+        model = SentenceTransformer(args.model)
 
     num_queries = args.num_queries
 

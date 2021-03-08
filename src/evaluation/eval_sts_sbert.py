@@ -23,5 +23,5 @@ if __name__ == "__main__":
             else:
                 train_samples.append(inp_example)
     evaluator = EmbeddingSimilarityEvaluator.from_input_examples(dev_samples, name='sts-dev')
-    model = SentenceTransformer("bert-base-nli-mean-tokens")
+    model = SentenceTransformer("sentence-transformers/stsb-distilbert-base")
     evaluator(model=model, output_path="./results")

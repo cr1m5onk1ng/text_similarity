@@ -1,3 +1,4 @@
+from tqdm.std import trange
 from src.utils.utils import load_file
 import torch
 from torch import nn
@@ -11,13 +12,36 @@ from typing import Union, Dict, List
 from transformers import AutoModel
 from src.models.Transformer import Transformer
 from src.models.Pooling import Pooling
-import numpy
+import transformers
+import numpy as np
 from tqdm import tqdm
 import os
 
 
+class OnnxSentenceTransformerWrapper(BaseEncoderModel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, input_ids, attention_mask):
+        token_embeddings = self.context_embedder(input_ids=input_ids, attention_mask=attention_mask)[0]
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+        sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+        return sum_embeddings / sum_mask
+
+    @classmethod
+    def load_pretrained(cls, path, params=None):
+        if params is None:
+            params = torch.load(os.path.join(path, "model_config.bin"))
+        context_embedder = transformers.AutoModel.from_pretrained(path)
+        return cls(
+            params=params,
+            context_embedder=context_embedder
+        )
+
+
 class SentenceTransformerWrapper(BaseEncoderModel):
-    def __init__(self, pooler: Pooling, merge_strategy: MergingStrategy, loss: Loss, *args, **kwargs):
+    def __init__(self, pooler: Pooler, merge_strategy: MergingStrategy, loss: Loss, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pooler = pooler
         if merge_strategy is not None:
@@ -27,23 +51,23 @@ class SentenceTransformerWrapper(BaseEncoderModel):
 
     def forward(self, features, parallel_mode=True, output_attentions=False, head_mask=None):
         if parallel_mode:
-            features_1 = features.sentence_1_features
-            features_2 = features.sentence_2_features
+            features_1 = features.sentence_1_features.to_dict()
+            features_2 = features.sentence_2_features.to_dict()
             if head_mask is not None:
                 features_1['head_mask'] = head_mask
                 features_2['head_mask'] = head_mask
-            embed_features_1 = self.context_embedder(features_1)
-            embed_features_2 = self.context_embedder(features_2)
-            embed_1 = self.pooler(embed_features_1)["sentence_embedding"]
-            embed_2 = self.pooler(embed_features_2)["sentence_embedding"]
+            embed_features_1 = self.context_embedder(**features_1)[0]
+            embed_features_2 = self.context_embedder(**features_2)[0]
+            embed_1 = self.pooler(embed_features_1, features.sentence_1_features)
+            embed_2 = self.pooler(embed_features_2, features.sentence_2_features)
             merged = self.merge_strategy(features, embed_1, embed_2)
         else:
             assert isinstance(features, EmbeddingsFeatures)
             input_features = features.to_dict()
             if head_mask is not None:
                 input_features['head_mask'] = head_mask
-            embed_features = self.context_embedder(input_features)
-            pooled = self.pooler(embed_features)["sentence_embedding"]
+            embed_features = self.context_embedder(**input_features)[0]
+            pooled = self.pooler(embed_features, features)
             merged = pooled
         output = self.loss(merged, features)
         if not parallel_mode:
@@ -52,29 +76,28 @@ class SentenceTransformerWrapper(BaseEncoderModel):
         return output
 
     def encode(self, features: EmbeddingsFeatures, output_attentions=False, **kwargs) -> torch.Tensor:
-        output = self.context_embedder(features.to_dict())
-        pooled = self.pooler(output)
+        output = self.context_embedder(**features.to_dict())[0]
+        pooled = self.pooler(output, features)
         if output_attentions:
-            return pooled['sentence_embedding'], pooled['attention_mask']
-        return pooled['sentence_embedding']
+            return pooled, features.attention_mask
+        return pooled
 
-    def encode_text(self, documents: List[str], output_numpy: bool=False) -> Union[torch.Tensor, numpy.array]:
+    def encode_text(self, documents: List[str], output_np: bool=False) -> Union[torch.Tensor, np.array]:
         self.to(self.params.device)
-        documents = sorted(documents, key=lambda x: len(x))
+        length_sorted_idx = np.argsort([len(sen) for sen in documents])
+        documents = [documents[idx] for idx in length_sorted_idx]
         encoded_documents = []
         self.eval()
-        while len(documents) > 0:
-            to_take = min(self.params.batch_size, len(documents))
-            select = random.randint(0, len(documents)-to_take)
-            batch = documents[select:select+to_take]   
+        for start_index in trange(0, len(documents), self.params.batch_size):
+            sentences_batch = documents[start_index:start_index+self.params.batch_size]   
             encoded_dict = self.params.tokenizer(
-                    text=batch,
+                    text=sentences_batch,
                     add_special_tokens=True,
                     padding='longest',
                     truncation=True,
                     max_length=self.params.sequence_max_len,
                     return_attention_mask=True,
-                    return_token_type_ids=True,
+                    return_token_type_ids=False,
                     return_tensors='pt'
             )
             input_ids = encoded_dict["input_ids"].to(self.params.device)
@@ -84,35 +107,34 @@ class SentenceTransformerWrapper(BaseEncoderModel):
                 attention_mask=attention_mask, 
             )
             with torch.no_grad():
-                embeddings = self.encode(features)
+                embeddings = self.encode(features, parallel_mode=False)
             embeddings = embeddings.detach()
 
-            if output_numpy:
+            if output_np:
                 embeddings = embeddings.cpu()
 
             encoded_documents.extend(embeddings)
-
-            del documents[select:select+to_take] 
+        encoded_documents = [encoded_documents[idx] for idx in np.argsort(length_sorted_idx)]
         
-        if output_numpy:
-            encoded_documents = numpy.asarray([embedding.numpy() for embedding in encoded_documents])
+        if output_np:
+            encoded_documents = np.asarray([embedding.np() for embedding in encoded_documents])
             return encoded_documents
         return torch.stack(encoded_documents)
 
     def save_pretrained(self, path):
         config_path = os.path.join(path, "model_config.bin")
         torch.save(self.params, config_path)
-        self.context_embedder.auto_model.save_pretrained(path)
+        self.context_embedder.save_pretrained(path)
     
     def get_sentence_embedding_dimension(self):
-        return self.pooler.get_sentence_embedding_dimension()
+        return self.context_embedder.config.hidden_size
 
     @classmethod
     def load_pretrained(cls, path, merge_strategy=None, loss=None, params=None):
         if params is None:
             params = torch.load(os.path.join(path, "model_config.bin"))
-        context_embedder = Transformer(path)
-        pooler = Pooling(context_embedder.get_word_embedding_dimension())
+        context_embedder = transformers.AutoModel.from_pretrained(path)
+        pooler = AvgPoolingStrategy()
         return cls(
             params=params,
             context_embedder=context_embedder,
@@ -124,6 +146,10 @@ class SentenceTransformerWrapper(BaseEncoderModel):
     @property
     def config(self):
         return self.context_embedder.auto_model.config
+
+    @property
+    def params_num(self):
+        return sum(param.numel() for param in self.context_embedder.parameters())
 
 
 class SiameseSentenceEmbedder(BaseEncoderModel):
@@ -179,7 +205,7 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
             return pooled, output
         return pooled
 
-    def encode_text(self, documents: List[str], output_numpy: bool=False) -> Union[torch.Tensor, numpy.array]:
+    def encode_text(self, documents: List[str], output_np: bool=False) -> Union[torch.Tensor, np.array]:
         self.to(self.params.device)
         documents = sorted(documents, key=lambda x: len(x))
         encoded_documents = []
@@ -208,15 +234,15 @@ class SiameseSentenceEmbedder(BaseEncoderModel):
                 embeddings = self.encode(features)
             embeddings = embeddings.detach()
 
-            if output_numpy:
+            if output_np:
                 embeddings = embeddings.cpu()
 
             encoded_documents.extend(embeddings)
 
             del documents[select:select+to_take] 
         
-        if output_numpy:
-            encoded_documents = numpy.asarray([embedding.numpy() for embedding in encoded_documents])
+        if output_np:
+            encoded_documents = np.asarray([embedding.np() for embedding in encoded_documents])
             return encoded_documents
         return torch.stack(encoded_documents)
 

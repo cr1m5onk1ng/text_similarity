@@ -25,7 +25,7 @@ class Configuration:
     model_parameters: Union[ModelParameters, None]
     model: str
     save_path: str
-    tokenizer: transformers.AutoTokenizer
+    tokenizer: transformers.AutoTokenizer = None
     sequence_max_len: int = 256
     dropout_prob: float = 0.1
     lr: float = 2e-5

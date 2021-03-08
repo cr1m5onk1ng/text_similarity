@@ -26,16 +26,24 @@ if __name__ == "__main__":
     parser.add_argument('--dp', type=float, dest="dropout", default=0.1)
     parser.add_argument('--bs', type=int, dest="batch_size", default=16)
     parser.add_argument('--save_path', dest="save_path", type=str, default="../evaluation/results")
-    parser.add_argument('--pretrained_path', dest="pretrained_path", type=str, default="../compression/output/pruned_12_600")
+    parser.add_argument('--pretrained_path', dest="pretrained_path", type=str, default="sentence-transformers/quora-distilbert-multilingual")
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
     parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
     parser.add_argument('--model', type=str, dest="model", default="bert-base-uncased")
+    parser.add_argument('--multilingual', type=bool, dest="multilingual", default=True)
 
     args = parser.parse_args()
 
-    valid_dataset = StsDataset.build_dataset("../data/sts/stsbenchmark.tsv", mode="test")
+    if args.multilingual:
+        dev_langs_from = ['fr', 'it', 'nl', 'es', 'en']
+        dev_langs_to =  ['ar', 'de', 'tr']
+        valid_paths = [f"../data/sts/STS2017-extended/STS.{l}-en.txt" for l in dev_langs_from]
+        valid_paths += [f"../data/sts/STS2017-extended/STS.en-{l}.txt" for l in dev_langs_to]
+        valid_dataset = StsDataset.build_multilingual(valid_paths)
+    else:
+        valid_dataset = StsDataset.build_dataset("../data/sts/stsbenchmark.tsv", mode="test")
 
     model_config = config.ModelParameters(
         model_name = args.config_name,
@@ -62,10 +70,13 @@ if __name__ == "__main__":
     #pooler = Pooling(args.pretrained_path)
 
     model = SentenceTransformerWrapper.load_pretrained(
-        args.pretrained_path,
+        params=configuration,
+        path=args.pretrained_path,
         loss = CosineSimilarityLoss,
         merge_strategy = EmbeddingsSimilarityCombineStrategy
     )
+
+    print(f"Model parameters: {model.params_num}")
 
     metrics = {"validation": [EmbeddingSimilarityMeter]}
 

@@ -1,5 +1,5 @@
 import os
-from src.models.sentence_encoder import SiameseSentenceEmbedder
+from src.models.sentence_encoder import SentenceTransformerWrapper, SiameseSentenceEmbedder
 from typing import Dict, List, Union
 import torch
 from torch import nn
@@ -23,7 +23,7 @@ class SearchPipeline(Pipeline):
             assert len(self.corpus.shape) == 2 #batch_size, embed_dim
 
         if isinstance(documents, list) and not return_embeddings:
-            if isinstance(self.model, SiameseSentenceEmbedder):
+            if isinstance(self.model, SentenceTransformerWrapper):
                 return self.model.encode_text(documents)
             else:
                 return self.model.encode(documents, batch_size=16, convert_to_numpy=False, convert_to_tensor=True)
@@ -57,7 +57,7 @@ class SentenceMiningPipeline(SearchPipeline):
             if isinstance(self.corpus, list):
                 print("##### Encoding corpus embeddings. This may take a while #####")
                 start_time = time.time()
-                if isinstance(self.model, SiameseSentenceEmbedder):
+                if isinstance(self.model, SentenceTransformerWrapper):
                     corpus_chunk = self.model.encode_text(corpus_chunk)
                 else:
                     corpus_chunk = self.model.encode(corpus_chunk, batch_size=16, convert_to_numpy=False, convert_to_tensor=True)
