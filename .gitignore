@@ -10,4 +10,5 @@ tests
 training/results
 src/compression/output/
 src/compression/dataset
+evaluation/index
 src/*/__pycache__

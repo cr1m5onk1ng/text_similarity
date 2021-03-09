@@ -60,6 +60,24 @@ class BaseEncoderModel(nn.Module):
                 hidden_size = embedder_size + pretrained_size
         self.params.model_parameters.hidden_size = hidden_size
 
+    @property
+    def config(self):
+        return self.context_embedder.config
+
+    @property
+    def embedding_size(self):
+        if "distilbert" in self.params.model:
+            embed_size = self.config.dim
+        else:
+            embed_size = self.config.hidden_size
+        if self.params.model_parameters.hidden_size is not None and self.params.model_parameters.hidden_size < embed_size:
+            return self.params.embedding_Size
+        return embed_size
+
+    @property
+    def params_num(self):
+        return sum(param.numel() for param in self.context_embedder.parameters())
+
     def forward(self):
         raise NotImplementedError()
 

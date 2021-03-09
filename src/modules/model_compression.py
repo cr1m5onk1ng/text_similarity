@@ -1,11 +1,6 @@
 
 import os
 from pathlib import Path
-
-from onnxruntime.capi.session import Session
-
-from src.training.train import Trainer
-from src.models.modeling import BaseEncoderModel
 import numpy as np
 from src.configurations.config import Configuration
 from src.utils.metrics import AverageMeter, Metrics
@@ -14,19 +9,12 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from ..training.learner import Learner
-from ..dataset.dataset import DataLoader, Dataset, SmartParaphraseDataloader
-from ..models.losses import SimpleDistillationLoss
-from typing import Dict, List
 from tqdm import tqdm
 from torch.cuda import amp
-from queue import PriorityQueue
 from heapq import heappush, heappop
-from src.models.SentenceTransformer import SentenceTransformer
-from sentence_transformers import models, losses, evaluation
+from sentence_transformers import models
 from sklearn.decomposition import PCA
-from abc import ABC, abstractmethod
-import onnx
-from onnxruntime.quantization import QuantizationMode, quantize, quantize_dynamic
+from onnxruntime.quantization import quantize_dynamic
 
 import logging
 
@@ -223,7 +211,7 @@ def quantize_model(path, save_path):
         model_output=save_path
     )
 
-def convert_to_onnx(model: nn.Module, params: Configuration, quantize=False):
+def convert_to_onnx(model: nn.Module, params: Configuration, opset=11, quantize=False):
     print(f"################## Staring ONNX graph optimization on model: {params.model} ##################")
     tokens = params.tokenizer.encode_plus("This is a sample input.")
     model.to(torch.device("cpu"))
@@ -264,7 +252,7 @@ def convert_to_onnx(model: nn.Module, params: Configuration, quantize=False):
         do_constant_folding=True,
         use_external_data_format=False,
         enable_onnx_checker=True,
-        opset_version=11,
+        opset_version=opset,
     )
     print(f"Optimized model correctly exported in: {onnx_path}")
     from onnxruntime import InferenceSession, SessionOptions
@@ -296,11 +284,11 @@ class DistillationStrategy(Learner):
     def _distillation_step(self, save_every_n=None):
         raise NotImplementedError()
 
-    def distill(self, save_every_n=None, reduce_sentences=None):
-        if (self.model.get_sentence_embedding_dimension() < 
-            self.teacher.get_sentence_embedding_dimension()):
+    def distill(self, save_every_n=None, reduce_dim=False, reduce_sentences=None):
+        if reduce_dim:
             assert reduce_sentences is not None
-            DistillationStrategy.reduce_teacher_dim(reduce_sentences, self.model, self.teacher)
+            DistillationStrategy.reduce_dim(self.model, reduce_sentences, self.model.params.model_parameters.hidden_size)
+            DistillationStrategy.reduce_dim(self.teacher, reduce_sentences, self.teacher.params.model_parameters.hidden_size)
 
         min_loss = np.inf
         for epoch in range(self.params.epochs):
@@ -314,33 +302,32 @@ class DistillationStrategy(Learner):
                 self.evaluator.evaluate()
 
     @staticmethod
-    def reduce_student_dim(student, sentences, dim=128):
-        embeddings = student.encode_text(sentences, convert_to_numpy=True)
+    def reduce_dim(model, sentences, dim=128):
+        embeddings = model.encode_text(sentences, output_np=True)
         pca = PCA(n_components=dim)
         pca.fit(embeddings)
         components = np.asarray(pca.components_)
-        projection = nn.Linear(student.get_sentence_embedding_dimension(), dim, bias=False)
-        projection.linear.weight = torch.nn.Parameter(torch.tensor(components))
-        student.add_module('projection', projection)
+        if not hasattr(model, "projection"):
+            model.projection = nn.Linear(model.embedding_size, model.params.model_parameters.hidden_size)
+        model.projection.linear.weight = torch.nn.Parameter(torch.tensor(components))
 
     @staticmethod
     def reduce_teacher_dim(sentences, student, teacher):
         logging.info("Student model has fewer dimensions than the teacher. Compute PCA for down projection")
-        embeddings = teacher.encode(sentences, convert_to_numpy=True)
+        embeddings = teacher.encode_text(sentences, output_np=True)
         pca = PCA(n_components=student.get_sentence_embedding_dimension())
         pca.fit(embeddings)
 
         #Add projection layer to teacher that projects the embeddings down to the student embedding size
-        projection = models.projection(in_features=teacher.get_sentence_embedding_dimension(), out_features=student.get_sentence_embedding_dimension(), bias=False, activation_function=torch.nn.Identity())
-        projection.linear.weight = torch.nn.Parameter(torch.tensor(pca.components_))
-        teacher.add_module('projection', projection)
+        assert hasattr(teacher, "projection")
+        teacher.projection.linear.weight = torch.nn.Parameter(torch.tensor(pca.components_))
 
 
 class FastFormersDistiller(DistillationStrategy):
-    def __init__(self, state_loss_ratio, tr_att_loss_ratio, use_cosine_sim, *args, **kwargs):
+    def __init__(self, state_loss_ratio, att_loss_ratio, use_cosine_sim, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.state_loss_ratio = state_loss_ratio
-        self.tr_att_loss_ratio = tr_att_loss_ratio
+        self.att_loss_ratio = att_loss_ratio
         self.use_cosine_sim = use_cosine_sim
         self.loss_mse = nn.MSELoss()
         self.loss_cs = nn.CosineSimilarity(dim=2)
@@ -356,8 +343,8 @@ class FastFormersDistiller(DistillationStrategy):
 
     def _step(self, data, b_idx):
         with torch.no_grad():
-            pooled_teacher, outputs_teacher = self.teacher.encode(data.sentence_1_features, output_attention=True)
-        pooled_student, outputs_student = self.model.encode(data.sentence_2_features, output_attention=True)
+            pooled_teacher, outputs_teacher = self.teacher.encode(data, return_output=True)
+        pooled_student, outputs_student = self.model.encode(data, return_output=True)
         loss = self._calculate_losses(outputs_teacher, outputs_student)
         if self.accumulation_steps > 1:
             loss = loss / self.accumulation_steps
@@ -366,21 +353,20 @@ class FastFormersDistiller(DistillationStrategy):
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
         if (b_idx + 1) % self.accumulation_steps == 0:
             self.optimizer.step()
-        return loss, torch.stack([pooled_teacher, pooled_student], dim = 0)
+        return loss, torch.stack([pooled_student, pooled_teacher], dim=0)
 
     def _mixed_precision_step(self, data, b_idx):
         with torch.no_grad():
-            pooled_teacher, outputs_teacher = self.teacher.encode(data.sentence_1_features, output_attention=True)
-        pooled_student, outputs_student = self.model.encode(data.sentence_2_features, output_attention=True)
+            pooled_teacher, outputs_teacher = self.teacher.encode(data, return_output=True)
+        pooled_student, outputs_student = self.model.encode(data, return_output=True)
         loss = self._calculate_losses(outputs_teacher, outputs_student)
         scale_before_step = self.scaler.get_scale()
         self.scaler.scale(loss).backward()
-        if self.max_grad_norm is not None:
-            self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        return loss, torch.stack([pooled_teacher, pooled_student], dim=0), scale_before_step
+        self.scaler.unscale_(self.optimizer)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        return loss, torch.stack([pooled_student, pooled_teacher], dim=0), scale_before_step
 
     def _logits_distillation(self, outputs_teacher, outputs_student):
         kd_loss = self.soft_cross_entropy(outputs_student[1], outputs_teacher[1])
@@ -392,8 +378,8 @@ class FastFormersDistiller(DistillationStrategy):
     def _embeddings_distillation(self, outputs_teacher, outputs_student):
         teacher_reps = outputs_teacher[2]
         student_reps = outputs_student[2]
-        new_teacher_reps = [teacher_reps[0], teacher_reps[self.teacher_layer_num]]
-        new_student_reps = [student_reps[0], student_reps[self.model_layer_num]]
+        new_teacher_reps = [teacher_reps[0].detach_(), teacher_reps[self.teacher_layer_num].detach_()]
+        new_student_reps = [student_reps[0].detach_(), student_reps[self.model_layer_num].detach_()]
         tmp_loss = 0
         for student_rep, teacher_rep in zip(new_student_reps, new_teacher_reps):
             if self.use_cosine_sim:
@@ -417,14 +403,14 @@ class FastFormersDistiller(DistillationStrategy):
             student_att = torch.where(student_att <= -1e2, torch.zeros_like(student_att).to(self.params.device), student_att)
             teacher_att = torch.where(teacher_att <= -1e2, torch.zeros_like(teacher_att).to(self.params.device), teacher_att)
             tmp_loss = 1.0 - self.loss_cs_att(student_att, teacher_att).mean()
-        self.att_loss += tmp_loss
+        self.attn_loss += tmp_loss
         self.tr_att_loss.update(tmp_loss.item(), n=self.train_dataloader.get_batch_size)
-        return self.tr_att_loss_ratio * self.att_loss
+        return self.att_loss_ratio * self.attn_loss
 
     def _calculate_losses(self, outputs_teacher, outputs_student):
         loss = self._logits_distillation(outputs_teacher, outputs_student)
         loss += self._embeddings_distillation(outputs_teacher, outputs_student)
-        loss += self._attention_distillation(outputs_teacher, outputs_student)
+        #loss += self._attention_distillation(outputs_teacher, outputs_student)
         return loss
     
     def soft_cross_entropy(self, predicts, targets):
@@ -433,6 +419,7 @@ class FastFormersDistiller(DistillationStrategy):
         return (- targets_prob * student_likelihood).sum(dim=-1).mean() 
 
     def _distillation_step(self, save_every_n=None):
+        losses = AverageMeter("loss")
         if self.metrics is not None:
             meters = Metrics(*self.metrics["training"])
         else:
@@ -444,7 +431,7 @@ class FastFormersDistiller(DistillationStrategy):
         self.teacher.eval()
         loss = 0.
         for b_idx, data in enumerate(iterator):
-            data.to_device(self.params.device) 
+            data.to(self.params.device) 
             skip_scheduler = False
             if self.fp16:
                 loss, embeddings, scale_before_step = self._mixed_precision_step(data, b_idx)

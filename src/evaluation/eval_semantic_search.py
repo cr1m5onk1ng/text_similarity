@@ -1,4 +1,4 @@
-from src.pipeline.search_pipeline import SentenceMiningPipeline
+from src.pipeline.search_pipeline import APISearchPipeline, SemanticSearchPipeline, SentenceMiningPipeline
 from src.models.sentence_encoder import SentenceTransformerWrapper
 from src.configurations import config
 from src.modules.pooling import *
@@ -41,11 +41,10 @@ if __name__ == "__main__":
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=256)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
     parser.add_argument('--student_model', type=str, dest="student_model", default="sentence-transformers/quora-distilbert-multilingual")
-    parser.add_argument('--teacher_model', type=str, dest="teacher_model", default="sentence-transformers/paraphrase-xlm-r-multilingual-v1")
-    parser.add_argument('--perc', type=float, dest="corpus_percentage", default=0.005)
+    parser.add_argument('--teacher_model', type=str, dest="teacher_model", default="sentence-transformers/quora-distilbert-multilingual")
+    parser.add_argument('--perc', type=float, dest="corpus_percentage", default=0.01)
     parser.add_argument('--nq', type=int, dest="num_queries", default=10)
     parser.add_argument('--topk', type=int, dest="topk", default=3)
-    parser.add_argument('--sbert', type=bool, dest="use_sbert",default=False)
     args = parser.parse_args()
 
     random.seed(43)
@@ -62,7 +61,7 @@ if __name__ == "__main__":
         device = torch.device(args.device),
         tokenizer = transformers.AutoTokenizer.from_pretrained(args.teacher_model, use_fast=True)
     )
-
+    """
     configuration_student = config.Configuration(
         model_parameters=model_config,
         model = args.student_model,
@@ -71,10 +70,10 @@ if __name__ == "__main__":
         device = torch.device(args.device),
         tokenizer = transformers.AutoTokenizer.from_pretrained(args.student_model, use_fast=True)
     )
-
+    """
   
     teacher_model = SentenceTransformerWrapper.load_pretrained(args.teacher_model, params=configuration_teacher)
-    student_model = SentenceTransformerWrapper.load_pretrained(args.student_model, params=configuration_student)
+    #student_model = SentenceTransformerWrapper.load_pretrained(args.student_model, params=configuration_student)
 
 
     num_queries = args.num_queries
@@ -82,6 +81,7 @@ if __name__ == "__main__":
     corpus_percent = args.corpus_percentage
 
     document_dataset = config.load_file("../dataset/cached/jp-wikipedia-dataset")
+    #document_dataset = DocumentCorpusDataset.from_tsv('../data/wiki-ja/ja.wikipedia_250k.txt')
 
     #TODO implement in dataloader
     all_sentences = list(document_dataset.sentences)
@@ -90,6 +90,21 @@ if __name__ == "__main__":
     corpus_portion = all_sentences[:int(len(all_sentences)*corpus_percent)]
     print(f"Sentences present in the corpus: {len(corpus_portion)}")
 
+    pipeline = APISearchPipeline(
+        name="semantic_search", 
+        embed_size=768,
+        index_path="./index",
+        corpus=corpus_portion, 
+        model=teacher_model)
+
+    while True:
+        query = str(input("Enter a sentence to search"))
+        results = pipeline(query, max_num_results=10)
+        print(f"Results for query: {query}: ")
+        for i, result in enumerate(results):
+            print(f"result {i+1}: {result}")
+
+    """
     queries = []
 
     for _ in range(args.num_queries):
@@ -100,11 +115,17 @@ if __name__ == "__main__":
     for q in queries:
         print(f"query: {q}")
     print()
-
+    
     print("Extracting most relevant sentences with teacher model")
-    pipeline_teacher = SentenceMiningPipeline(name="paraphrase_mining", corpus=corpus_portion, model=teacher_model, corpus_chunk_size=len(corpus_portion))
+    pipeline_teacher = SemanticSearchPipeline(
+        name="semantic_search", 
+        index_path="./index",
+        corpus=corpus_portion, 
+        model=teacher_model)
+
     results_teacher = pipeline_teacher(queries, max_num_results=args.topk)
     print("Done.")
+   
     print()
     print("Extracting most relevant sentences with student model")
     pipeline_student = SentenceMiningPipeline(name="paraphrase_mining", corpus=corpus_portion, model=student_model, corpus_chunk_size=len(corpus_portion))
@@ -114,14 +135,15 @@ if __name__ == "__main__":
     print("Comparing student perfomance to the teacher...")
     compare_models(queries, results_teacher, results_student)
     print("Done.")
-    """
-    print("Results: ")
-    for k in results:
-        print(f"Best matches for query: {queries[k]}")
-        print(results[k])
-        print()
-    """
+  
 
+    print("Results: ")
+    for k in results_teacher:
+        print(f"Best matches for query: {queries[k]}")
+        print(results_teacher[k])
+        print()
+
+    """
 
 
 

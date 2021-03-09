@@ -48,22 +48,38 @@ def prune_rewire(args, model, eval_dataloader, tokenizer, use_tqdm=True):
     results = {}
     model.to(args.device)
     # get the model ffn weights and biases
-    inter_weights = torch.zeros(model.config.num_hidden_layers, model.config.intermediate_size, model.config.hidden_size).to(args.device)
-    inter_biases = torch.zeros(model.config.num_hidden_layers, model.config.intermediate_size).to(args.device)
-    output_weights = torch.zeros(model.config.num_hidden_layers, model.config.hidden_size, model.config.intermediate_size).to(args.device)
-
-    if isinstance(model, SentenceTransformerWrapper):
-        layers = model.context_embedder.auto_model.base_model.encoder.layer
+    if "distilbert" in args.model:
+        num_hidden_layers = model.context_embedder.config.n_layers
+        intermediate_size = model.context_embedder.config.hidden_dim
+        hidden_size = model.context_embedder.config.dim
+        layers = model.context_embedder.base_model.transformer.layer
+        num_attention_heads = model.context_embedder.config.n_heads
     else:
-        layers = model.base_model.encoder.layer
-    head_importance = torch.zeros(model.config.num_hidden_layers, model.config.num_attention_heads).to(args.device)
-    ffn_importance = torch.zeros(model.config.num_hidden_layers, model.config.intermediate_size).to(args.device)
-    for layer_num in range(model.config.num_hidden_layers):
-        inter_weights[layer_num] = layers._modules[str(layer_num)].intermediate.dense.weight.detach().to(args.device)
-        inter_biases[layer_num] = layers._modules[str(layer_num)].intermediate.dense.bias.detach().to(args.device)
-        output_weights[layer_num] = layers._modules[str(layer_num)].output.dense.weight.detach().to(args.device)
+        num_hidden_layers = model.context_embedder.config.num_hidden_layers
+        intermediate_size = model.context_embedder.config.intermediate_size
+        hidden_size = model.context_embedder.config.hidden_size
+        layers = model.context_embedder.base_model.encoder.layer
+        num_attention_heads = model.context_embedder.config.num_attention_heads
 
-    head_mask = torch.ones(model.config.num_hidden_layers, model.config.num_attention_heads).to(args.device)
+    inter_weights = torch.zeros(num_hidden_layers, intermediate_size, hidden_size).to(args.device)
+    inter_biases = torch.zeros(num_hidden_layers, intermediate_size).to(args.device)
+    output_weights = torch.zeros(num_hidden_layers, hidden_size, intermediate_size).to(args.device)
+    
+    head_importance = torch.zeros(num_hidden_layers, num_attention_heads).to(args.device)
+    ffn_importance = torch.zeros(num_hidden_layers, intermediate_size).to(args.device)
+
+    if "distilbert" in args.model:
+        for layer_num in range(num_hidden_layers):
+            inter_weights[layer_num] = layers._modules[str(layer_num)].ffn.lin1.weight.detach().to(args.device)
+            inter_biases[layer_num] = layers._modules[str(layer_num)].ffn.lin1.bias.detach().to(args.device)
+            output_weights[layer_num] = layers._modules[str(layer_num)].ffn.lin2.weight.detach().to(args.device)
+    else:
+        for layer_num in range(num_hidden_layers):
+            inter_weights[layer_num] = layers._modules[str(layer_num)].intermediate.dense.weight.detach().to(args.device)
+            inter_biases[layer_num] = layers._modules[str(layer_num)].intermediate.dense.bias.detach().to(args.device)
+            output_weights[layer_num] = layers._modules[str(layer_num)].output.dense.weight.detach().to(args.device)
+
+    head_mask = torch.ones(num_hidden_layers, num_attention_heads).to(args.device)
     head_mask.requires_grad_(requires_grad=True)
 
     # Eval!
@@ -77,21 +93,13 @@ def prune_rewire(args, model, eval_dataloader, tokenizer, use_tqdm=True):
         batch.to(args.device)
         if args.mixed_precision:
             with amp.autocast():
-                if not isinstance(model, SentenceTransformerWrapper):
-                    outputs = model(output_attentions=True, **batch.embeddings_features.to_dict(), head_mask=head_mask, labels=batch.labels)
-                    tmp_eval_loss, logits = outputs[:2]
-                else:
-                    outputs = model(features=batch, output_attentions=True, head_mask=head_mask)
-                    tmp_eval_loss = outputs.loss
-                    logits = outputs.predictions
-        else:
-            if not isinstance(model, SentenceTransformerWrapper):
-                outputs = model(output_attentions=True, **batch.embeddings_features.to_dict(), head_mask=head_mask, labels=batch.labels)
-                tmp_eval_loss, logits = outputs[:2]
-            else:
-                outputs = model(features=batch, output_attentions=True, head_mask=head_mask)
+                outputs = model(features=batch, return_output=False, head_mask=head_mask)
                 tmp_eval_loss = outputs.loss
                 logits = outputs.predictions
+        else:
+            outputs = model(features=batch, return_output=False, head_mask=head_mask)
+            tmp_eval_loss = outputs.loss
+            logits = outputs.predictions
 
         eval_loss += tmp_eval_loss.mean().item()
 
@@ -102,12 +110,18 @@ def prune_rewire(args, model, eval_dataloader, tokenizer, use_tqdm=True):
         head_importance += head_mask.grad.abs().detach()
 
         # collect gradients of linear layers
-        for layer_num in range(model.config.num_hidden_layers):
-            ffn_importance[layer_num] += torch.abs(
-                torch.sum(layers._modules[str(layer_num)].intermediate.dense.weight.grad.detach()*inter_weights[layer_num], 1) 
-                + layers._modules[str(layer_num)].intermediate.dense.bias.grad.detach()*inter_biases[layer_num])
-
-        tot_tokens += (batch.sentence_1_features["attention_mask"].float().detach().sum().data + batch.sentence_2_features["attention_mask"].float().detach().sum().data )
+        if "distilbert" in args.model:
+            for layer_num in range(num_hidden_layers):
+                ffn_importance[layer_num] += torch.abs(
+                    torch.sum(layers._modules[str(layer_num)].ffn.lin1.weight.grad.detach()*inter_weights[layer_num], 1) 
+                    + layers._modules[str(layer_num)].ffn.lin1.bias.grad.detach()*inter_biases[layer_num])
+        else:
+            for layer_num in range(num_hidden_layers):
+                ffn_importance[layer_num] += torch.abs(
+                    torch.sum(layers._modules[str(layer_num)].intermediate.dense.weight.grad.detach()*inter_weights[layer_num], 1) 
+                    + layers._modules[str(layer_num)].intermediate.dense.bias.grad.detach()*inter_biases[layer_num])
+        # TODO See if there is a better strategy
+        tot_tokens += (batch.sentence_1_features.attention_mask.float().detach().sum().data + batch.sentence_2_features.attention_mask.float().detach().sum().data )
 
         nb_eval_steps += 1
         preds = logits.detach().cpu().numpy()
@@ -122,16 +136,25 @@ def prune_rewire(args, model, eval_dataloader, tokenizer, use_tqdm=True):
     # rewire the network
     head_importance = head_importance.cpu()
     ffn_importance = ffn_importance.cpu()
-    num_heads = model.config.num_attention_heads
-    head_size = model.config.hidden_size / num_heads
-    for layer_num in range(model.config.num_hidden_layers):
+    num_heads = num_attention_heads
+    head_size = hidden_size / num_heads
+    
+    for layer_num in range(num_hidden_layers):
         # load query, key, value weights
-        query_weight = layers._modules[str(layer_num)].attention.self.query.weight
-        query_bias = layers._modules[str(layer_num)].attention.self.query.bias
-        key_weight = layers._modules[str(layer_num)].attention.self.key.weight
-        key_bias = layers._modules[str(layer_num)].attention.self.key.bias
-        value_weight = layers._modules[str(layer_num)].attention.self.value.weight
-        value_bias = layers._modules[str(layer_num)].attention.self.value.bias
+        if "distilbert" in args.model:
+            query_weight = layers._modules[str(layer_num)].attention.q_lin.weight
+            query_bias = layers._modules[str(layer_num)].attention.q_lin.bias
+            key_weight = layers._modules[str(layer_num)].attention.k_lin.weight
+            key_bias = layers._modules[str(layer_num)].attention.k_lin.bias
+            value_weight = layers._modules[str(layer_num)].attention.v_lin.weight
+            value_bias = layers._modules[str(layer_num)].attention.v_lin.bias
+        else:
+            query_weight = layers._modules[str(layer_num)].attention.self.query.weight
+            query_bias = layers._modules[str(layer_num)].attention.self.query.bias
+            key_weight = layers._modules[str(layer_num)].attention.self.key.weight
+            key_bias = layers._modules[str(layer_num)].attention.self.key.bias
+            value_weight = layers._modules[str(layer_num)].attention.self.value.weight
+            value_bias = layers._modules[str(layer_num)].attention.self.value.bias
 
         # sort query, key, value based on the confidence scores
         query_weight, query_bias = sort_by_importance(query_weight,
@@ -139,51 +162,92 @@ def prune_rewire(args, model, eval_dataloader, tokenizer, use_tqdm=True):
             head_importance[layer_num],
             args.target_num_heads,
             head_size)
-        layers._modules[str(layer_num)].attention.self.query.weight = torch.nn.Parameter(query_weight)
-        layers._modules[str(layer_num)].attention.self.query.bias = torch.nn.Parameter(query_bias)
+        if "distilbert" in args.model:
+            layers._modules[str(layer_num)].attention.q_lin.weight = torch.nn.Parameter(query_weight)
+            layers._modules[str(layer_num)].attention.q_lin.bias = torch.nn.Parameter(query_bias)
+        else:
+            layers._modules[str(layer_num)].attention.self.query.weight = torch.nn.Parameter(query_weight)
+            layers._modules[str(layer_num)].attention.self.query.bias = torch.nn.Parameter(query_bias)
         key_weight, key_bias = sort_by_importance(key_weight,
             key_bias,
             head_importance[layer_num],
             args.target_num_heads,
             head_size)
-        layers._modules[str(layer_num)].attention.self.key.weight = torch.nn.Parameter(key_weight)
-        layers._modules[str(layer_num)].attention.self.key.bias = torch.nn.Parameter(key_bias)
+        if "distilbert" in args.model:
+            layers._modules[str(layer_num)].attention.k_lin.weight = torch.nn.Parameter(key_weight)
+            layers._modules[str(layer_num)].attention.k_lin.bias = torch.nn.Parameter(key_bias)
+        else:
+            layers._modules[str(layer_num)].attention.self.key.weight = torch.nn.Parameter(key_weight)
+            layers._modules[str(layer_num)].attention.self.key.bias = torch.nn.Parameter(key_bias)
         value_weight, value_bias = sort_by_importance(value_weight,
             value_bias,
             head_importance[layer_num],
             args.target_num_heads,
             head_size)
-        layers._modules[str(layer_num)].attention.self.value.weight = torch.nn.Parameter(value_weight)
-        layers._modules[str(layer_num)].attention.self.value.bias = torch.nn.Parameter(value_bias)
+        if "distilbert" in args.model:
+            layers._modules[str(layer_num)].attention.v_lin.weight = torch.nn.Parameter(value_weight)
+            layers._modules[str(layer_num)].attention.v_lin.bias = torch.nn.Parameter(value_bias)
+        else:
+            layers._modules[str(layer_num)].attention.self.value.weight = torch.nn.Parameter(value_weight)
+            layers._modules[str(layer_num)].attention.self.value.bias = torch.nn.Parameter(value_bias)
 
         # output matrix
-        weight_sorted, _ = sort_by_importance(
-            layers._modules[str(layer_num)].attention.output.dense.weight.transpose(0, 1),
-            None,
-            head_importance[layer_num],
-            args.target_num_heads,
-            head_size)
-        weight_sorted = weight_sorted.transpose(0, 1)
-        layers._modules[str(layer_num)].attention.output.dense.weight = torch.nn.Parameter(weight_sorted)
+        if "distilbert" in args.model:
+            weight_sorted, _ = sort_by_importance(
+                layers._modules[str(layer_num)].attention.out_lin.weight.transpose(0, 1),
+                None,
+                head_importance[layer_num],
+                args.target_num_heads,
+                head_size)
+            weight_sorted = weight_sorted.transpose(0, 1)
+            layers._modules[str(layer_num)].attention.out_lin.weight = torch.nn.Parameter(weight_sorted)
+    
+            weight_sorted, bias_sorted = sort_by_importance(
+                layers._modules[str(layer_num)].ffn.lin1.weight,
+                layers._modules[str(layer_num)].ffn.lin1.bias, 
+                ffn_importance[layer_num],
+                args.target_ffn_dim,
+                1)
+            layers._modules[str(layer_num)].ffn.lin1.weight = torch.nn.Parameter(weight_sorted)
+            layers._modules[str(layer_num)].ffn.lin1.bias = torch.nn.Parameter(bias_sorted)
+    
+            # ffn output matrix input side
+            weight_sorted, _ = sort_by_importance(
+                layers._modules[str(layer_num)].ffn.lin2.weight.transpose(0, 1),
+                None, 
+                ffn_importance[layer_num],
+                args.target_ffn_dim,
+                1)
+            weight_sorted = weight_sorted.transpose(0, 1)
+            layers._modules[str(layer_num)].ffn.lin2.weight = torch.nn.Parameter(weight_sorted)
+        else:
+            weight_sorted, _ = sort_by_importance(
+                layers._modules[str(layer_num)].attention.output.dense.weight.transpose(0, 1),
+                None,
+                head_importance[layer_num],
+                args.target_num_heads,
+                head_size)
+            weight_sorted = weight_sorted.transpose(0, 1)
+            layers._modules[str(layer_num)].attention.output.dense.weight = torch.nn.Parameter(weight_sorted)
 
-        weight_sorted, bias_sorted = sort_by_importance(
-            layers._modules[str(layer_num)].intermediate.dense.weight,
-            layers._modules[str(layer_num)].intermediate.dense.bias, 
-            ffn_importance[layer_num],
-            args.target_ffn_dim,
-            1)
-        layers._modules[str(layer_num)].intermediate.dense.weight = torch.nn.Parameter(weight_sorted)
-        layers._modules[str(layer_num)].intermediate.dense.bias = torch.nn.Parameter(bias_sorted)
+            weight_sorted, bias_sorted = sort_by_importance(
+                layers._modules[str(layer_num)].intermediate.dense.weight,
+                layers._modules[str(layer_num)].intermediate.dense.bias, 
+                ffn_importance[layer_num],
+                args.target_ffn_dim,
+                1)
+            layers._modules[str(layer_num)].intermediate.dense.weight = torch.nn.Parameter(weight_sorted)
+            layers._modules[str(layer_num)].intermediate.dense.bias = torch.nn.Parameter(bias_sorted)
 
-        # ffn output matrix input side
-        weight_sorted, _ = sort_by_importance(
-            layers._modules[str(layer_num)].output.dense.weight.transpose(0, 1),
-            None, 
-            ffn_importance[layer_num],
-            args.target_ffn_dim,
-            1)
-        weight_sorted = weight_sorted.transpose(0, 1)
-        layers._modules[str(layer_num)].output.dense.weight = torch.nn.Parameter(weight_sorted)
+            # ffn output matrix input side
+            weight_sorted, _ = sort_by_importance(
+                layers._modules[str(layer_num)].output.dense.weight.transpose(0, 1),
+                None, 
+                ffn_importance[layer_num],
+                args.target_ffn_dim,
+                1)
+            weight_sorted = weight_sorted.transpose(0, 1)
+            layers._modules[str(layer_num)].output.dense.weight = torch.nn.Parameter(weight_sorted)
 
     # save pruned model
     from pathlib import Path
@@ -191,11 +255,14 @@ def prune_rewire(args, model, eval_dataloader, tokenizer, use_tqdm=True):
     Path(path).mkdir(exist_ok=True)
 
     model.config.hidden_act = 'relu'    # use ReLU activation for the pruned models.
-    model.config.num_attention_heads = min([num_heads, args.target_num_heads])
-    model.config.intermediate_size = layers._modules['0'].intermediate.dense.weight.size(0)
-    model.config.save_pretrained(args.output_dir + "/pruned_" + str(int(args.target_num_heads)) + "_" + str(int(args.target_ffn_dim)))
-    model.save_pretrained(args.output_dir + "/pruned_" + str(int(args.target_num_heads)) + "_" + str(int(args.target_ffn_dim)))
-    tokenizer.save_pretrained(args.output_dir + "/pruned_" + str(int(args.target_num_heads)) + "_" + str(int(args.target_ffn_dim)))
+    if "distilbert" in args.model:
+        model.config.n_heads = min([num_heads, args.target_num_heads])
+        model.config.hidden_dim = layers._modules['0'].ffn.lin1.weight.size(0)
+    else:
+        model.config.num_attention_heads = min([num_heads, args.target_num_heads])
+        model.config.intermediate_size = layers._modules['0'].intermediate.dense.weight.size(0)
+    model.save_pretrained(path)
+    tokenizer.save_pretrained(path)
 
     return results, preds
 
@@ -206,21 +273,20 @@ if __name__ == '__main__':
 
         parser.add_argument('--ep', type=int, dest="epochs", default=1)
         parser.add_argument('--name', type=str, dest="config_name")
-        parser.add_argument('--bs', type=int, dest="batch_size", default=12)
+        parser.add_argument('--bs', type=int, dest="batch_size", default=16)
         parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
         parser.add_argument('--embed_dim', type=int, dest="embed_dim", default=768)
-        parser.add_argument('--seq_len', type=int, dest="seq_len", default=64)
+        parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
         parser.add_argument('--device', type=str, dest="device", default="cuda")
-        parser.add_argument('--model', type=str, dest="model", default="sentence-transformers/bert-base-nli-mean-tokens")
-        parser.add_argument('--pretrained', type=str, dest="pretrained_model_path", default="../training/trained_models/sencoder-bert-nli-sts")
-        parser.add_argument('--max_sentences', type=float, dest="max_sentences", default=300000)
+        parser.add_argument('--model', type=str, dest="model", default="sentence-transformers/quora-distilbert-multilingual")
+        parser.add_argument('--pretrained', type=str, dest="pretrained_model_path", default="../compression/output/sencoder-dmbert-quora-distilled-2layers")
         parser.add_argument('--target_num_heads', type=int, dest="target_num_heads", default=12)
         parser.add_argument('--target_ffn_dim', type=int, dest="target_ffn_dim", default=600)
         parser.add_argument('--output_dir', dest="output_dir", type=str, default="./output")
 
         args = parser.parse_args()
 
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
+        tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
 
         model_config = config.ModelParameters(
         model_name = args.config_name,
@@ -241,22 +307,15 @@ if __name__ == '__main__':
             tokenizer = tokenizer,
         )
 
-        valid_dataset = EntailmentDataset.build_dataset('../data/nli/AllNLI.tsv', mode="test", max_examples=100)
-        print()
+        valid_dataset = EntailmentDataset.build_dataset('../data/nli/AllNLI.tsv', mode="test")
         print()
         print(f"########## Number of examples {len(valid_dataset)} ##################")
         print()
-        print()
-        dataloader = SmartParaphraseDataloader.build_batches(valid_dataset, args.batch_size, mode="standard", config=configuration, sentence_pairs=False, sbert_format=True)
+        dataloader = SmartParaphraseDataloader.build_batches(valid_dataset, args.batch_size, mode="standard", config=configuration, sentence_pairs=False)
 
-        #model = transformers.BertForSequenceClassification.from_pretrained(args.model)
-        embedder_model = Transformer(args.model)
-        pooler_model = Pooling(args.model)
-        
-        sentence_model = SentenceTransformerWrapper(
+        sentence_model = SentenceTransformerWrapper.load_pretrained(
+            path=args.pretrained_model_path,
             params=configuration,
-            context_embedder=embedder_model,
-            pooler=pooler_model,
             merge_strategy=SentenceBertCombineStrategy(),
             loss = SoftmaxLoss(params=configuration)
         )

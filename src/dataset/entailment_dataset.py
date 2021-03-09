@@ -53,7 +53,6 @@ class EntailmentDataset(Dataset):
         random.shuffle(examples)
         labels = [ex.get_label for ex in examples]
         assert(len(labels)) == len(examples)
-        print(f"Number of examples: {len(examples)}")
         return cls(examples, labels)
 
     def add_dataset(self, path, max_examples=None):

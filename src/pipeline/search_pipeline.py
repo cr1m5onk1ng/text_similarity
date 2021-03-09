@@ -18,20 +18,19 @@ class SearchPipeline(Pipeline):
         self.corpus = corpus 
         self.model = model
 
-    def encode_corpus(self, documents: Union[List[str], torch.Tensor], return_embeddings: bool=False) -> Union[List[str], torch.Tensor]:
+    def encode_corpus(self, documents: Union[List[str], torch.Tensor], return_embeddings: bool=False, convert_to_numpy=False) -> Union[List[str], torch.Tensor]:
         if isinstance(self.corpus, torch.Tensor):
             assert len(self.corpus.shape) == 2 #batch_size, embed_dim
 
         if isinstance(documents, list) and not return_embeddings:
-            if isinstance(self.model, SentenceTransformerWrapper):
-                return self.model.encode_text(documents)
-            else:
-                return self.model.encode(documents, batch_size=16, convert_to_numpy=False, convert_to_tensor=True)
+            return self.model.encode_text(documents, output_np=convert_to_numpy)
         return documents
 
-    #TODO
-    def load_corpus(self, path):
-        pass
+    def _search(self, queries: Union[List[str], torch.Tensor], max_num_results: int):
+        raise NotImplementedError()
+
+    def __call__(self, queries, max_num_results):
+        return self._search(queries, max_num_results)
 
 
 class SentenceMiningPipeline(SearchPipeline):
@@ -39,7 +38,7 @@ class SentenceMiningPipeline(SearchPipeline):
         super().__init__(*args, **kwargs)
         self.corpus_chunk_size = corpus_chunk_size
 
-    def _mine(
+    def search(
         self, 
         queries: Union[List[str], torch.Tensor], 
         max_num_results: int, 
@@ -55,6 +54,7 @@ class SentenceMiningPipeline(SearchPipeline):
         for corpus_index in range(0, len(self.corpus), self.corpus_chunk_size):
             corpus_chunk = self.corpus[corpus_index:self.corpus_chunk_size]
             if isinstance(self.corpus, list):
+                print()
                 print("##### Encoding corpus embeddings. This may take a while #####")
                 start_time = time.time()
                 if isinstance(self.model, SentenceTransformerWrapper):
@@ -70,27 +70,28 @@ class SentenceMiningPipeline(SearchPipeline):
                 query_embedding = query_embedding.unsqueeze(0).expand_as(corpus_chunk)
                 scores = F.cosine_similarity(query_embedding, corpus_chunk, dim=-1)
                 top_scores = torch.topk(scores, min(max_num_results, len(queries)), sorted=False)
-                print(f"Top candidates indexes: {top_scores[1]}")
+                actual_candidates = top_scores[1]
+                print(f"Top candidates indexes: {actual_candidates}")
                 if return_embeddings:
                     assert isinstance(self.corpus, torch.Tensor)
-                    top_candidates[query_idx] = self.corpus[torch.LongTensor(top_scores[1])]
+                    top_candidates[query_idx] = self.corpus[torch.LongTensor(actual_candidates)]
                 else:
                     candidates = []
-                    for cidx in top_scores[1]:
+                    for cidx in actual_candidates:
                         candidates.append(self.corpus[cidx])
                     top_candidates[query_idx] = candidates
         return top_candidates
 
 
     def __call__(self, queries: Union[List[str], torch.Tensor], max_num_results: int, return_embeddings: bool=False):
-        return self._mine(queries, max_num_results, return_embeddings)
+        return self._search(queries, max_num_results, return_embeddings)
 
 
 class SemanticSearchPipeline(SearchPipeline):
     def __init__(
         self, 
-        index_path: str, 
         *args, 
+        index_path: str = None, 
         ef: int = 50, 
         ef_construction: int = 400, 
         M: int = 64, 
@@ -111,22 +112,22 @@ class SemanticSearchPipeline(SearchPipeline):
         
         #### INDEX PREPARATION ####
         print("####   Computing Query Embeddings...   ####")
-        query_embeddings = self.encode_corpus(documents=queries, return_embeddings=return_embeddings)
+        query_embeddings = self.encode_corpus(documents=queries, return_embeddings=return_embeddings, convert_to_numpy=True)
         print("Done.")
         print()
 
-        if isinstance(self.model, SiameseSentenceEmbedder):
-            embed_size = self.model.context_embedder.config.hidden_size
-        else:
-            embed_size = self.model.config.hidden_size
-        index = hnswlib.index(space = 'cosine', dim = embed_size)
+        embed_size = self.model.embedding_size
+  
+        index = hnswlib.Index(space = 'cosine', dim = embed_size)
 
         if os.path.exists(self.index_path):
             index.load_index(self.index_path)
         else:
+            os.makedirs(self.index_path)
             print("#### Computing Corpus Embeddings. This may take a while. ####")
-            corpus_embeddings = self.model.encode_text(self.corpus)
+            corpus_embeddings = self.model.encode_text(self.corpus, output_np=True)
             print("Done.")
+            print("Building the index. This may take a while...")
             index.init_index(
                 max_elements = len(self.corpus), 
                 ef_construction = self.ef_construction, 
@@ -135,6 +136,7 @@ class SemanticSearchPipeline(SearchPipeline):
             index.add_items(corpus_embeddings, list(range(corpus_embeddings.shape[0])))
 
             index.save_index(self.index_path)
+            print("Done.")
         assert max_num_results < self.ef
         index.set_ef(self.ef)
 
@@ -143,18 +145,60 @@ class SemanticSearchPipeline(SearchPipeline):
 
         for qidx, query in enumerate(query_embeddings):
             hits_ids, distances = index.knn_query(query, k=max_num_results)
-            results = [(id, 1-score) for id, score in zip(hits_ids, distances)]
+            results = [(id, 1-score) for id, score in zip(hits_ids[0], distances[0])]
             results = sorted(results, key = lambda x: x[1], reverse=True)
             candidate_texts = []
             for hit_idx, _ in results:
                 candidate_texts.append(self.corpus[hit_idx])
             top_results[qidx] = candidate_texts
+        return top_results
 
     def __call__(
         self,
-        queries: Union[List[str], 
-        torch.Tensor], 
+        queries: Union[List[str], torch.Tensor], 
         max_num_results: int, 
         return_embeddings: bool=False):
 
         return self._search(queries, max_num_results, return_embeddings)
+
+
+class APISearchPipeline(SemanticSearchPipeline):
+    def __init__(self, embed_size, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # load index
+        self.index = hnswlib.Index(space = 'cosine', dim = embed_size)
+        index_load_path = os.path.join(self.index_path, "index.bin")
+        if not os.path.exists(index_load_path):
+            os.makedirs(self.index_path, exist_ok=True)
+            print("No index found. Building index from corpus...")
+            corpus_embeddings = self.model.encode_text(self.corpus, output_np=True)
+            self.index.init_index(
+                max_elements = len(self.corpus), 
+                ef_construction = self.ef_construction, 
+                M = self.M)
+            self.index.add_items(corpus_embeddings, list(range(corpus_embeddings.shape[0])))
+            index_save_path = os.path.join(self.index_path, "index.bin")
+            self.index.save_index(index_save_path)
+            print("Done.")
+        else:
+            assert os.path.exists(self.index_path)
+            self.index.load_index(self.index_path)
+
+    def _search(self, text: Union[str, List[str]], max_num_results: int, return_embeddings=False):
+        if isinstance(text, str):
+            text = [text]
+        # encode query(ies)
+        query_embeddings = self.model.encode_text(text, output_np=True)
+        assert max_num_results < self.ef
+        self.index.set_ef(self.ef)
+        hits_ids, distances = self.index.knn_query(query_embeddings, k=max_num_results)
+        # search in index
+        results = [(id, 1-score) for id, score in zip(hits_ids[0], distances[0])]
+        results = sorted(results, key = lambda x: x[1], reverse=True)
+        candidate_texts = []
+        for hit_idx, _ in results:
+            candidate_texts.append(self.corpus[hit_idx])
+        # return results
+        assert candidate_texts
+        return candidate_texts
+
