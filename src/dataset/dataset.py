@@ -1,4 +1,6 @@
+from nltk import tag
 from sentence_transformers.SentenceTransformer import SentenceTransformer
+from torch.cuda import current_blas_handle
 import src.configurations.config as config
 from sklearn.model_selection import StratifiedKFold
 from collections import OrderedDict
@@ -112,6 +114,10 @@ class DocumentCorpusDataset:
             for sent in doc.sentences:
                 yield sent
 
+    @property
+    def articles(self):
+        return list(map(lambda doc: ' '.join([doc.document] + doc.sentences), self.documents))
+
     @classmethod
     def from_tsv(cls, path):
         print("Parsing corpus. this may take a while")
@@ -173,25 +179,30 @@ class ParaphraseProcessor():
                     negative_examples += [sent_1_example, sent_2_example]
         return DocumentCorpusDataset(positive_examples, negative_examples)
 
-
+@dataclass
 class EmbeddingsFeatures:
 
-    def __init__(self, input_ids, attention_mask, *args, **kwargs):
-        super(EmbeddingsFeatures, self).__init__(*args, **kwargs)
-        self.input_ids = input_ids
-        self.attention_mask = attention_mask
-
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    token_type_ids: torch.Tensor = None
 
     @classmethod
     def from_dict(cls, dictionary, *args, **kwargs):
         return cls(
             dictionary["input_ids"],
             dictionary["attention_mask"],
+            dictionary["token_type_ids"] if "token_type_ids" in dictionary else None,
             *args, 
             **kwargs
         )
 
     def to_dict(self):
+        if self.token_type_ids is not None:
+            return {
+            "input_ids": self.input_ids,
+            "attention_mask": self.attention_mask,
+            "token_type_ids": self.token_type_ids
+        }
         return {
             "input_ids": self.input_ids,
             "attention_mask": self.attention_mask
@@ -205,17 +216,19 @@ class EmbeddingsFeatures:
     def to(self, device):
         self.input_ids = self.input_ids.to(device)
         self.attention_mask = self.attention_mask.to(device)
+        if hasattr(self, "token_type_ids"):
+            self.token_type_ids = self.token_type_ids.to(device)
 
 
 @dataclass
 class SenseEmbeddingsFeatures(EmbeddingsFeatures):
-    tokens_indexes: List[torch.LongTensor]
+    tokens_indexes: List[torch.LongTensor] = None
 
 
 @dataclass
 class WordFeatures(EmbeddingsFeatures):
-    indexes: List[torch.LongTensor]
-    words: Union[List[str], None]
+    indexes: List[torch.LongTensor] = None
+    words: Union[List[str], None] = None
 
 
 @dataclass
@@ -233,7 +246,7 @@ class DataLoaderFeatures(DataFeatures):
     def to(self, device):
         super().to(device)
         self.embeddings_features.to(device)
-        
+
 
 @dataclass
 class WordClassifierFeatures(DataFeatures):
@@ -316,15 +329,19 @@ class DataLoader:
     # si ordinano e si mettono in una lista con la parola corrispondente associata
     # la lista contiene dunque triple (parola, posizione_1, posizione_2) ordinate per posizione
     @staticmethod 
-    def find_words_in_tokenized_sentence(tokenized_word, token_ids, visited=None):
+    def find_words_in_tokenized_sentence(tokenized_word, token_ids, current_pos=0):
         # Iterate through to find a matching sublist of the token_ids
         #example ['CLS', 'em', '##bed', '##ding', '##s', 'fl', '##ab', '##berg', '##ast', '##ed', 'SEP']
-        for i in range(len(token_ids)):
-            if token_ids[i] == tokenized_word[0] and token_ids[i:i+len(tokenized_word)] == tokenized_word:
-                pos = (i,i+len(tokenized_word)-1)
-                if pos not in visited:
-                    visited.add(pos)
+        for i in range(current_pos, len(token_ids)):
+            try:
+                if token_ids[i] == tokenized_word[0] and token_ids[i:i+len(tokenized_word)] == tokenized_word:
+                    pos = (i,i+len(tokenized_word)-1)
                     return pos
+            except IndexError:
+                print(f"Word ids: {tokenized_word}")
+                print(f"Sentence ids: {token_ids}")
+                print(f"Current pos: {current_pos}")
+                break
         
 
 import random
@@ -334,7 +351,7 @@ class SmartParaphraseDataloader(DataLoader):
 
     @classmethod
     def build_batches(cls, dataset, batch_size, config, sentence_pairs=False, mode='standard', sbert_format=False):
-        assert mode in ["sense_retrieval", "standard", "parallel", "tatoeba", "distillation"]
+        assert mode in ["sense_retrieval", "standard", "parallel", "tatoeba", "distillation", "word", "sequence"]
         if mode == "parallel":
             key = lambda x: max(len(x.get_sent1.strip().split(" ")), len(x.get_sent2.strip().split(" ")))
             dataset = sorted(dataset, key=key)
@@ -350,14 +367,18 @@ class SmartParaphraseDataloader(DataLoader):
             key = lambda x: max(len(x[0].get_sent1.strip().split(" ")), len(x[0].get_sent2.strip().split(" ")))
             dataset = sorted(dataset, key=key)
             batches = SmartParaphraseDataloader.smart_batching_standard(dataset, batch_size, config=config, sentence_pairs=sentence_pairs, sbert_format=sbert_format)
-        if mode == "tatoeba":
-            key = lambda x: len(x[0].strip().split(" ") + x[1].strip().split(" "))
+        if mode == "word":
+            key = lambda x: len(x.sentence)
             dataset = sorted(dataset, key=key)
-            batches = SmartParaphraseDataloader.smart_batching_parallel(dataset, batch_size)
+            batches = SmartParaphraseDataloader.smart_batching_word(dataset, batch_size, config)
         if mode == "distillation":
             key = lambda x: len(x)
             dataset = sorted(dataset, key=key)
             batches = SmartParaphraseDataloader.smart_batching_distillation(dataset, batch_size, config=config)
+        if mode == "sequence":
+            key = lambda x: len(x[0].content)
+            dataset = sorted(dataset, key=key)
+            batches = SmartParaphraseDataloader.smart_batching_sequence(dataset, batch_size, config=config)
 
         return cls(batch_size, batches)
 
@@ -391,83 +412,85 @@ class SmartParaphraseDataloader(DataLoader):
         return positions_1, positions_2
 
     @staticmethod
-    def find_tokens_positions(encoded_tokens, encoded_sentence, offset=None):
+    def build_indexes_mono(words, config, device):
+        encoded_sent = config.tokenizer.encode(" ".join(words))
+        encoded_words = []
+        for w in words:
+            encoded = config.tokenizer.encode(w)[1:-1]
+            if encoded:
+                encoded_words.append((w, encoded))
+        positions = SmartParaphraseDataloader.find_tokens_positions(encoded_words, encoded_sent, device=device)
+        return positions
+
+
+    @staticmethod
+    def find_tokens_positions(encoded_tokens, encoded_sentence, device, offset=None):
         visited = set()
         positions = [] #a list of tuples with token indexes in the tokenized sentence
+        current_pos = 0
         for word, tokenized_word in encoded_tokens:  #encoded_tokens is a list of tuples (word, words_encoded_tokens)
-            pos = DataLoader.find_words_in_tokenized_sentence(tokenized_word, encoded_sentence, visited) 
+            pos = DataLoader.find_words_in_tokenized_sentence(tokenized_word, encoded_sentence, current_pos=current_pos) 
+            current_pos = pos[1]+1
             if pos:
                 if offset is not None:
                     p_1 = pos[0] + offset
                     p_2 = pos[1] + offset
                     range_list = list(range(p_1, p_2+1))
-                    el = (word, torch.LongTensor(range_list))
+                    el = torch.LongTensor(range_list).to(device)
                     positions.append(el)
                 else:
                     range_list = list(range(pos[0], pos[1]+1))
-                    el = (word, torch.LongTensor(range_list))
+                    el = torch.LongTensor(range_list).to(device)
                     positions.append(el)
         return positions
 
     @staticmethod
-    def smart_batching_sense_sentence_pairs(sorted_dataset, batch_size, parallel_data=False):
+    def smart_batching_word(dataset, batch_size, config, sentence_pairs=False):
         batches = []
-        dataset = sorted_dataset
-        while len(dataset) > 0:
-            to_take = min(batch_size, len(dataset))
-            select = random.randint(0, len(dataset)-to_take)
-            batch = dataset[select:select+to_take]           
-            
-            b_labels = []
-         
-            sent_pairs = []
-            sentences_words_positions = []
-            for ex, label in batch:
-                if parallel_data:
-                    sent1 = ex.get_tgt_example.get_sent1.strip()
-                    sent2 = ex.get_tgt_example.get_sent2.strip()
-                    sentences_1.append(sent1)
-                    sentences_2.append(sent2)
-                    sent_1_src = ex.get_src_example.get_sent1
-                    sent_2_src = ex.get_src_example.get_sent2
-                    src_sentences_1.append(sent_1_src)
-                    src_sentences_2.append(sent_2_src)
-                else:
-                    sent1 = ex.get_sent1.strip()
-                    sent2 = ex.get_sent2.strip()
-                    words_positions = SmartParaphraseDataloader.build_indexes_combine(sent1, sent2)
-                    
-                    sentences_words_positions.append(words_positions)
-                 
-                    sent_pairs.append([sent1, sent2])
-                   
-                b_labels.append(label)
+        tag_to_labels = dataset.tag_to_labels
+        for i in range(0, len(dataset), batch_size):
+            #take the examples of the current batches
+            batch_examples = dataset[i:i+batch_size]
+            #take the labels
+            batch_labels = []
+            sentences = []
+            tokens_positions = []
+            for ex in batch_examples:
+                sentence = ex.sentence
+                tokens = list(map(ex.tokens, lambda x: tag_to_labels[x]))
+                sentences.append(sentence)
+                labels = ex.tags
+                batch_labels.append(torch.LongTensor(labels).to(config.device))
+                positions = SmartParaphraseDataloader.build_indexes_mono(tokens, config, device=config.device)
+                tokens_positions.append(positions)
 
-            del dataset[select:select+to_take]
-
-            encoded_dict = config.TOKENIZER(
-                text=sent_pairs,
+            encoded = config.tokenizer(
+                text=sentences,
                 add_special_tokens=True,
                 padding='longest',
                 truncation=True,
-                max_length=config.SEQUENCE_MAX_LENGTH,
+                max_length=config.sequence_max_len,
                 return_attention_mask=True,
                 return_token_type_ids=True,
                 return_tensors='pt'
             )
+            pad_len = encoded["input_ids"].shape[1]
+            
 
-            batch_labels = torch.LongTensor(b_labels)
+            features = WordFeatures(
+                input_ids = encoded["input_ids"],
+                attention_mask = encoded["attention_mask"],
+                token_type_ids = encoded["token_type_ids"],
+                indexes = tokens_positions,
+                words = None
+            )
 
-            features = EmbeddingsFeatures.from_dict(encoded_dict)
-
-            d = SiameseDataLoaderFeatures(
-                embeddings_feature = features,
-                tokens_indexes = sentences_words_positions,
-                labels = batch_labels
+            d = DataLoaderFeatures(
+                embeddings_features=features,
+                labels = torch.stack(batch_labels, dim=0).to(config.device)
             )
 
             batches.append(d)
-
         return batches
 
 
@@ -708,6 +731,38 @@ class SmartParaphraseDataloader(DataLoader):
                 max_length=config.sequence_max_len,
                 return_attention_mask=True,
                 #return_token_type_ids=True,
+                return_tensors='pt'
+            )
+
+            features = EmbeddingsFeatures.from_dict(encoded_dict)
+
+            batches.append(features)
+
+            del dataset[select:select+to_take]
+
+        return batches
+
+    @staticmethod
+    def smart_batching_sequence(sorted_dataset, batch_size, config):
+        batches = []
+        dataset = sorted_dataset
+        while len(dataset) > 0:
+            to_take = min(batch_size, len(dataset))
+            select = random.randint(0, len(dataset)-to_take)
+            batch = dataset[select:select+to_take]             
+            
+            all_sentences = []
+            for example in batch:
+                all_sentences.append(example.content)
+         
+            encoded_dict = config.tokenizer(
+                text=all_sentences,
+                add_special_tokens=True,
+                padding='longest',
+                truncation=True,
+                max_length=config.sequence_max_len,
+                return_attention_mask=True,
+                return_token_type_ids=True,
                 return_tensors='pt'
             )
 

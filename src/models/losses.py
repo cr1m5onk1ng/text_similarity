@@ -19,14 +19,14 @@ class Loss(nn.Module):
 class SoftmaxLoss(Loss):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.classifier = nn.Linear(self.params.model_parameters.hidden_size*3, self.params.model_parameters.num_classes)
+        self.classifier = nn.Linear(self.params.model_parameters.hidden_size, self.params.model_parameters.num_classes)
         self.loss_function = nn.CrossEntropyLoss()
 
     def forward(self, hidden_state, features):
         labels = features.labels 
         logits = self.classifier(hidden_state)
         loss = self.loss_function(
-            logits, 
+            logits.view(-1, self.params.model_parameters.num_classes), 
             labels.view(-1)
         )
         return ClassifierOutput(

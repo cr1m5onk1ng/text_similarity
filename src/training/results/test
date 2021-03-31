@@ -1,7 +1,8 @@
- ------- Running training for model: test with config: test -------- 
+ ------- Running training for model: test -------- 
 
-Params: batch size: 16; number of epochs: 1; frozen weights: False; pretrained embeddings: False
-Model params: hidden size: 2304; lr: 2e-05; merge strategy: SentenceBertCombineStrategy()
-training > epoch: 1; loss: 1.117677126611982; accuracy: 0.29464285714285715; 
+Params: batch size: 16; number of epochs: 1; frozen weights: True; pretrained embeddings: False
+Model params: hidden size: 768; lr: 4.5e-05; merge strategy: None
+validation > epoch: 1; loss: 0.30777920060791075; 
+training > epoch: 1; loss: 0.23704819211369038; 
 
 

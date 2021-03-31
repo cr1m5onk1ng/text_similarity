@@ -18,29 +18,16 @@ def load_file(path):
     return d
 
 def save_file(file, path, name):
+    if not os.path.exists(path):
+        os.makedirs(path)
     file_name = open(os.path.join(path, name), 'wb')
     pickle.dump(file, file_name)
     file_name.close()
 
-def l2norm(tensor):
-    norm = torch.norm(tensor, p=2)
-    tensor /= norm
-
-def scale_norm(weight):
-    data = tensor.weight.data
-    mean = data.mean(0).view(1, data.size(1))
-    data /= mean
-    tensor.weight.data = data
-    return tensor
-
-def mean_norm(weight):
-    data = tensor.weight.data
-    mean = data.mean(0).view(1, data.size(1))
-    std = data.std(0).view(1, data.size(1))
-    data -= mean
-    data /= std
-    tensor.weight.data = data
-    return tensor
+def search_files(root_dir):
+    for root, _, files in os.walk(root_dir):
+            for name in files:
+                yield os.path.join(root, name)
 
 def combine_tensors(tensors, strategy='avg'):
     assert strategy in ["avg", "sum"]
@@ -133,13 +120,13 @@ def pad_tensor(tensor, padding):
     ret = torch.cat((tensor, padding_tensor), dim=-1)
     return ret
 
-map_to_bnids = True if config.CONFIG.pretrained_embeddings_dim == config.DIMENSIONS_MAP["ares_multi"] else False
-def word_to_wn_offsets(word, include_hypernyms=False, return_mapping=False, use_sense_keys=True, map_to_bnids=map_to_bnids, pos=None ):
+#map_to_bnids = True if config.pretrained_embeddings_dim == config.DIMENSIONS_MAP["ares_multi"] else False
+def word_to_wn_offsets(word, include_hypernyms=False, return_mapping=False, use_sense_keys=True, map_to_bnids=False, pos=None ):
     """ given a word, returns the offsets of the synsets related to the word """
     offsets = []
     offset_to_synset = {}
     if map_to_bnids:
-        bnids_map = config.CONFIG.bnids_map
+        bnids_map = config.bnids_map
     for synset in wn.synsets(word):
         if pos is not None:
             if synset.pos() != pos:
@@ -192,7 +179,7 @@ def offsets_to_combined_tensor(offsets, embed_map, strategy='avg'):
     else:
         return None
 
-def word_to_sense_embeddings(word, embed_map, include_hypernyms=False, return_senses=False, map_to_bnids=map_to_bnids, pos=None):
+def word_to_sense_embeddings(word, embed_map, include_hypernyms=False, return_senses=False, map_to_bnids=False, pos=None):
     """takes a word and returns its sense embeddings representations """
     offsets = word_to_wn_offsets(word, include_hypernyms=include_hypernyms, return_mapping=return_senses, map_to_bnids=map_to_bnids, pos=pos)
     vectors = []
@@ -200,19 +187,19 @@ def word_to_sense_embeddings(word, embed_map, include_hypernyms=False, return_se
     if return_senses:
         for sense, offset in offsets.items():
             if offset in embed_map:
-                sense_to_vector[sense] = embed_map[offset].to(config.CONFIG.device) 
+                sense_to_vector[sense] = embed_map[offset].to(config.device) 
             else:
                 print("sense not found!")
     else:
         for offset in offsets:
             if offset in embed_map:
-                vectors.append(embed_map[offset].to(config.CONFIG.device))
+                vectors.append(embed_map[offset].to(config.device))
     if return_senses:
         return sense_to_vector
     return vectors
 
 
-def get_word_embeddings_batch(embeddings, words, embed_map, include_hypernyms=False, return_senses=False, map_to_bnids=map_to_bnids):
+def get_word_embeddings_batch(embeddings, words, embed_map, include_hypernyms=False, return_senses=False, map_to_bnids=False):
     """"given a list of words and a list of their vector representations, 
         returns a batch of sense embeddings related to each word.
         If no senses are found for a word, the same vector is returned
@@ -221,7 +208,7 @@ def get_word_embeddings_batch(embeddings, words, embed_map, include_hypernyms=Fa
     for word, word_vec in zip(words, embeddings):
         sense_embeddings = word_to_sense_embeddings(word, embed_map, include_hypernyms=include_hypernyms, return_senses=return_senses, map_to_bnids=map_to_bnids)
         #most_similar returns a tensors of size (1, embed_size)
-        if word_vec.shape[-1] < config.CONFIG.pretrained_embeddings_dim:
+        if word_vec.shape[-1] < config.pretrained_embeddings_dim:
             word_vec = torch.cat((word_vec, word_vec), dim=-1)
         if not sense_embeddings:
             if not return_senses:
@@ -239,7 +226,7 @@ def get_word_embeddings_batch(embeddings, words, embed_map, include_hypernyms=Fa
                 ret_embeddings.append(most_similar_senses(sense_embeddings, word_vec))
     if return_senses:
         return ret_embeddings
-    stacked = torch.stack(ret_embeddings, dim=0).to(config.CONFIG.device)
+    stacked = torch.stack(ret_embeddings, dim=0).to(config.device)
     return stacked  #size (num_words, embed_dim)
 
 def get_sentence_embeddings_batch(embeddings, embed_map, indexes):
@@ -249,7 +236,7 @@ def get_sentence_embeddings_batch(embeddings, embed_map, indexes):
         sense_reprs = []
         for word, idx in sent_idxs:  
             context_embed = sentence_embed[idx]
-            if context_embed.shape[-1] < config.CONFIG.pretrained_embeddings_dim:
+            if context_embed.shape[-1] < config.pretrained_embeddings_dim:
                 context_embed = torch.cat((context_embed, context_embed), dim=-1)
             if len(context_embed.shape) < 2:
                 context_embed = context_embed.unsqueeze(0)
@@ -329,13 +316,6 @@ def sensekeys_to_bnids(mapping_path):
             for key in keys:
                 mapping[key] = bnid
     return mapping
-
-
-if __name__ == "__main__":
-
-    mapping = sensekeys_to_bnids('../data/all_bn_wn_keys.txt')
-    save_file(mapping, '../data', "bnids_map")
-    print(list(mapping.items())[:100])
 
 
 

@@ -10,15 +10,7 @@ import src.utils.utils as utils
 from src.utils import activations
 from src.modules.pooling import *
 from abc import ABC, abstractmethod
-
-
-def Linear(in_features, out_features, bias=True):
-    """ returns a simple dense layer with initialized weights """
-    dense = torch.nn.Linear(in_features, out_features, bias).to(device)
-    torch.nn.init.xavier_uniform_(dense.weight)
-    if bias:
-        torch.nn.init.constant_(dense.bias, 0.)
-    return dense
+import transformers
 
 
 class BaseEncoderModel(nn.Module):
@@ -36,9 +28,16 @@ class BaseEncoderModel(nn.Module):
             self.normalize = normalize
             self.context_embedder = context_embedder
             
-    def load_pretrained(self, path):
-        checkpoint = torch.load(path)
-        self.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    @classmethod
+    def load_pretrained(cls, path, params=None):
+        if params is None:
+            params = torch.load(os.path.join(path, "model_config.bin"))
+        config = transformers.AutoConfig.from_pretrained(path)
+        context_embedder = transformers.AutoModel.from_pretrained(path, config=config)
+        return cls(
+            params=params,
+            context_embedder=context_embedder
+        )
 
     @property
     def model_name(self):
@@ -48,7 +47,7 @@ class BaseEncoderModel(nn.Module):
         if isinstance(self.context_embedder, SentenceTransformer):
             embedder_size = self.context_embedder.get_sentence_embedding_dimension()
         else:
-            embedder_size = self.context_embedder.embedding_size
+            embedder_size = self.embedding_size
         pretrained_size = self.params.pretrained_embeddings_dim
         hidden_size = embedder_size if \
                     not paraphrase else \
@@ -76,7 +75,7 @@ class BaseEncoderModel(nn.Module):
 
     @property
     def params_num(self):
-        return sum(param.numel() for param in self.context_embedder.parameters())
+        return sum(param.numel() for param in self.context_embedder.parameters() if param.requires_grad)
 
     def forward(self):
         raise NotImplementedError()

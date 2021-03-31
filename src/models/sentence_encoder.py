@@ -4,11 +4,11 @@ import torch
 from torch import nn
 from transformers import AutoConfig
 from src.configurations import config as config
-from .modeling import BaseEncoderModel
 from .losses import *
 from src.modules.pooling import *
 from src.dataset.dataset import *
 from typing import Union, Dict, List
+from .modeling import BaseEncoderModel
 from transformers import AutoModel
 import transformers
 import numpy as np
@@ -16,10 +16,10 @@ from tqdm import tqdm
 import os
 
 
+
 class OnnxSentenceTransformerWrapper(BaseEncoderModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.projection = nn.Linear(self.embedding_size, self.params.model_parameters.hidden_size)
 
     def forward(self, input_ids, attention_mask):
         token_embeddings = self.context_embedder(input_ids=input_ids, attention_mask=attention_mask)[0]
@@ -27,29 +27,40 @@ class OnnxSentenceTransformerWrapper(BaseEncoderModel):
         sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
         sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
         pooled = sum_embeddings / sum_mask
-        return self.projection(pooled)
+        return pooled
 
     @classmethod
     def load_pretrained(cls, path, params=None):
         if params is None:
             params = torch.load(os.path.join(path, "model_config.bin"))
-        context_embedder = transformers.AutoModel.from_pretrained(path)
+        config = transformers.AutoConfig.from_pretrained(path)
+        context_embedder = transformers.AutoModel.from_pretrained(path, config=config)
         return cls(
             params=params,
             context_embedder=context_embedder
         )
 
+    def save_pretrained(self, path):
+        if not os.path.exists(path):
+            os.makedirs(path)
+        config_path = os.path.join(path, "model_config.bin")
+        torch.save(self.params, config_path)
+        self.context_embedder.save_pretrained(path)
+        self.context_embedder.config.save_pretrained(path)
+        self.params.tokenizer.save_pretrained(path)
+
 
 class SentenceTransformerWrapper(BaseEncoderModel):
-    def __init__(self, pooler: Pooler, merge_strategy: MergingStrategy, loss: Loss, *args, **kwargs):
+    def __init__(self, pooler: PoolingStrategy, merge_strategy: MergingStrategy, loss: Loss, *args, projection_dim=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.pooler = pooler
         if merge_strategy is not None:
             self.merge_strategy = merge_strategy
         if loss is not None:
             self.loss = loss
-        if self.params.model_parameters.hidden_size < self.embedding_size:
-            self.projection = nn.Linear(self.embedding_size, self.params.model_parameters.hidden_size, bias=False)
+        hidden_size = self.context_embedder.config.hidden_size if not 'distilbert' in self.params.model else self.context_embedder.config.dim
+        if projection_dim is not None:
+            self.projection = nn.Linear(hidden_size, projection_dim, bias=False)
 
     def forward(self, features, parallel_mode=True, return_output=False, head_mask=None):
         if parallel_mode:
@@ -60,8 +71,12 @@ class SentenceTransformerWrapper(BaseEncoderModel):
                 features_2['head_mask'] = head_mask
             embed_features_1 = self.context_embedder(**features_1)[0]
             embed_features_2 = self.context_embedder(**features_2)[0]
-            embed_1 = self.pooler(embed_features_1, features.sentence_1_features)
-            embed_2 = self.pooler(embed_features_2, features.sentence_2_features)
+            if hasattr(self, "projection"):
+                embed_1 = self.projection(self.pooler(embed_features_1, features.sentence_1_features))
+                embed_2 = self.projection(self.pooler(embed_features_2, features.sentence_2_features))
+            else:
+                embed_1 = self.pooler(embed_features_1, features.sentence_1_features)
+                embed_2 = self.pooler(embed_features_2, features.sentence_2_features)
             merged = self.merge_strategy(features, embed_1, embed_2)
         else:
             assert isinstance(features, EmbeddingsFeatures)
@@ -69,7 +84,12 @@ class SentenceTransformerWrapper(BaseEncoderModel):
             if head_mask is not None:
                 input_features['head_mask'] = head_mask
             model_output = self.context_embedder(**input_features, output_attentions=return_output, output_hidden_states=return_output)
-            pooled = self.pooler(model_output[0], features)
+            if hasattr(self, "projection"):
+                pooled = self.pooler(model_output[0], features)
+                print(f"Pooled dimension: {pooled.shape}")
+                pooled = self.projection(pooled)
+            else:
+                pooled = self.pooler(model_output[0], features)
             merged = pooled
         if hasattr(self, "projection"):
             merged = self.projection(pooled)
@@ -82,6 +102,8 @@ class SentenceTransformerWrapper(BaseEncoderModel):
     def encode(self, features: EmbeddingsFeatures, return_output=False, **kwargs) -> torch.Tensor:
         output = self.context_embedder(**features.to_dict(), output_attentions=return_output, output_hidden_states=return_output)
         pooled = self.pooler(output[0], features)
+        if hasattr(self, "projection"):
+            pooled = self.projection(pooled)
         if return_output:
             return pooled, output
         return pooled
@@ -124,14 +146,6 @@ class SentenceTransformerWrapper(BaseEncoderModel):
             encoded_documents = np.asarray([embedding.numpy() for embedding in encoded_documents])
             return encoded_documents
         return torch.stack(encoded_documents)
-
-    def save_pretrained(self, path):
-        if not os.path.exists(path):
-            os.makedirs(path)
-        config_path = os.path.join(path, "model_config.bin")
-        torch.save(self.params, config_path)
-        self.context_embedder.save_pretrained(path)
-        self.context_embedder.config.save_pretrained(path)
     
     def get_sentence_embedding_dimension(self):
         return self.context_embedder.config.hidden_size

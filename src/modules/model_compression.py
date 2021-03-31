@@ -308,8 +308,8 @@ class DistillationStrategy(Learner):
         pca.fit(embeddings)
         components = np.asarray(pca.components_)
         if not hasattr(model, "projection"):
-            model.projection = nn.Linear(model.embedding_size, model.params.model_parameters.hidden_size)
-        model.projection.linear.weight = torch.nn.Parameter(torch.tensor(components))
+            model.projection = nn.Linear(model.embedding_size, dim)
+        model.projection.weight = torch.nn.Parameter(torch.tensor(components))
 
     @staticmethod
     def reduce_teacher_dim(sentences, student, teacher):
@@ -320,7 +320,7 @@ class DistillationStrategy(Learner):
 
         #Add projection layer to teacher that projects the embeddings down to the student embedding size
         assert hasattr(teacher, "projection")
-        teacher.projection.linear.weight = torch.nn.Parameter(torch.tensor(pca.components_))
+        teacher.projection.weight = torch.nn.Parameter(torch.tensor(pca.components_))
 
 
 class FastFormersDistiller(DistillationStrategy):

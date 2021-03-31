@@ -38,8 +38,9 @@ class WordPoolingStrategy(PoolingStrategy):
     all the tokens that are part of a word in the sentence
     and taking their avarage
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, params, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.params = params
 
     def forward(self, embeddings: torch.Tensor, features: WordFeatures, **kwargs):
         word_embeddings = []
@@ -48,6 +49,34 @@ class WordPoolingStrategy(PoolingStrategy):
             vectors_avg = torch.mean(curr_w_vectors, dim=0)
             word_embeddings.append(vectors_avg)
         return torch.stack(word_embeddings, dim=0)
+
+class SequencePoolingStrategy(WordPoolingStrategy):
+    """
+    The representation is pooled by extracting
+    all the tokens that are part of a word in the sentence
+    and taking their avarage
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, embeddings: torch.Tensor, features: WordFeatures, **kwargs):
+        word_embeddings = []
+        longest_dim = embeddings.shape[1]
+        for sen_idx in range(embeddings.shape[0]):
+            new_sequence = []
+            tokens_indexes = features.indexes[sen_idx]
+            for idx in tokens_indexes:
+                curr_w_vectors = embeddings[sen_idx][idx]
+                curr_w_vectors = torch.mean(curr_w_vectors, dim=0).to(self.params.device)
+                new_sequence.append(curr_w_vectors) 
+            pad_n = longest_dim - len(new_sequence)
+            padding = [torch.zeros(curr_w_vectors.shape[-1]).to(self.params.device)] * pad_n
+            new_sequence += padding
+            new_sequence = torch.stack(new_sequence, dim=0).to(self.params.device)
+            word_embeddings.append(new_sequence)
+        stacked = torch.stack(word_embeddings, dim=0).to(self.params.device)
+        print(f"Pooled embedding dim: {stacked.shape}")
+        return stacked
 
 
 class SensePoolingStrategy(PoolingStrategy):
@@ -74,7 +103,7 @@ class WordSensePoolingStrategy(SensePoolingStrategy):
         embeddings = self.context_pooler(embeddings, features)
         sense_embeddings = utils.get_word_embeddings_batch(
             embeddings=embeddings, 
-            embed_map=config.CONFIG.embedding_map,
+            embed_map=self.params.embedding_map,
             words=features.words,
             **kwargs
         )
@@ -90,7 +119,7 @@ class SiameseSensePoolingStrategy(SensePoolingStrategy):
     def forward(self, embeddings: torch.Tensor, features: SenseEmbeddingsFeatures, **kwargs):
         sense_embeddings = utils.get_sentence_embeddings_batch(
             embeddings=embeddings, 
-            embed_map=config.CONFIG.embedding_map,
+            embed_map=self.params.embedding_map,
             indexes = features.tokens_indexes,
             **kwargs
         )
@@ -182,16 +211,4 @@ class Pooler(nn.Module):
     def forward(self):
         raise NotImplementedError()
 
-
-class EmbeddingsPooler(Pooler):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def forward(self, embeddings: torch.Tensor, features: EmbeddingsFeatures, attention: torch.Tensor=None, **kwargs):
-        pooled = self.pooling_strategy(embeddings, features, **kwargs)
-        if self.normalize:
-            pooled = F.normalize(pooled, dim=-1, p=2)
-        if attention is not None:
-            return pooled, attention
-        return pooled  
 

@@ -57,9 +57,9 @@ class Trainer:
         merge_strategy = "None"
         if hasattr(self.configuration.model, "merge_strategy"):
             merge_strategy = self.configuration.model.merge_strategy
-        title = f" ------- Running training for model: {self.configuration.model.model_name} with config: {self.configuration.config_name} -------- \n"
-        configs = f"Params: batch size: {self.train_data_loader.get_batch_size}; number of epochs: {self.epochs}; frozen weights: { self.configuration.model.params.model_parameters.freeze_weights}; pretrained embeddings: {self.configuration.model.params.model_parameters.use_pretrained_embeddings}"
-        configs += f"\nModel params: hidden size: {self.configuration.model.params.model_parameters.hidden_size}; lr: {self.configuration.model.params.lr};"
+        title = f" ------- Running training for model: {self.configuration.params.model_parameters.model_name} -------- \n"
+        configs = f"Params: batch size: {self.configuration.params.batch_size}; number of epochs: {self.epochs}; frozen weights: { self.configuration.params.model_parameters.freeze_weights}; pretrained embeddings: {self.configuration.params.model_parameters.use_pretrained_embeddings}"
+        configs += f"\nModel params: hidden size: {self.configuration.params.model_parameters.hidden_size}; lr: {self.configuration.params.lr};"
         configs += f" merge strategy: {merge_strategy}"
         if self.verbose:
             logging.info(title)
@@ -73,9 +73,11 @@ class Trainer:
             logging.info(f"######## Epoch: {epoch+1} #########")
             print()
             train_res = self.configuration.train_fn(self.train_data_loader)
-            if self.configuration.eval_in_train:
+            if self.eval_in_train:
                 valid_res = self.configuration.eval_fn(self.valid_data_loader, return_predictions=self.return_predictions)
-            optim_metric = valid_res[self.measure] if self.eval_in_train else train_res[self.measure]
+                optim_metric = valid_res[self.measure] if self.eval_in_train else train_res[self.measure]
+            else:
+                optim_metric = train_res[self.measure]
             train_res_line = f"training > epoch: {epoch+1}; "
             for metric, value in train_res.items():
                 train_res_line += f"{metric}: {value}; "
@@ -91,14 +93,14 @@ class Trainer:
                     if self.return_predictions:
                       results["labels"] = valid_res[f"labels_{self.measure}"]
                       results["predictions"] = valid_res[f"predictions_{self.measure}"]
-                    self.configuration.save_model(os.path.join(self.model_save_path, self.configuration.config_name))
+                    self.configuration.model.save_pretrained(os.path.join(self.model_save_path, self.configuration.config_name))
             elif self.direction == "maximize":
                 if optim_metric > best_metric:
                     best_metric = optim_metric
                     if self.return_predictions:
                       results["labels"] = valid_res[f"labels_{self.measure}"]
                       results["predictions"] = valid_res[f"predictions_{self.measure}"]
-                    self.configuration.save_model(os.path.join(self.model_save_path, self.configuration.config_name))
+                    self.configuration.model.save_pretrained(os.path.join(self.model_save_path, self.configuration.config_name))
             results["best_metric"] = best_metric
             
         messages.append("\n")

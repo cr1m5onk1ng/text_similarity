@@ -11,13 +11,6 @@ class Pipeline:
     def __init__(self, name):
         self.name = name
 
-
-class SearchPipeline(Pipeline):
-    def __init__(self, corpus: Union[List[str], List[torch.Tensor], torch.Tensor], model: nn.Module, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.corpus = corpus 
-        self.model = model
-
     def encode_corpus(self, documents: Union[List[str], torch.Tensor], return_embeddings: bool=False, convert_to_numpy=False) -> Union[List[str], torch.Tensor]:
         if isinstance(self.corpus, torch.Tensor):
             assert len(self.corpus.shape) == 2 #batch_size, embed_dim
@@ -25,6 +18,13 @@ class SearchPipeline(Pipeline):
         if isinstance(documents, list) and not return_embeddings:
             return self.model.encode_text(documents, output_np=convert_to_numpy)
         return documents
+
+
+class SearchPipeline(Pipeline):
+    def __init__(self, corpus: Union[List[str], List[torch.Tensor], torch.Tensor], model: nn.Module, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.corpus = corpus 
+        self.model = model
 
     def _search(self, queries: Union[List[str], torch.Tensor], max_num_results: int):
         raise NotImplementedError()
@@ -38,7 +38,7 @@ class SentenceMiningPipeline(SearchPipeline):
         super().__init__(*args, **kwargs)
         self.corpus_chunk_size = corpus_chunk_size
 
-    def search(
+    def _search(
         self, 
         queries: Union[List[str], torch.Tensor], 
         max_num_results: int, 
@@ -182,7 +182,7 @@ class APISearchPipeline(SemanticSearchPipeline):
             print("Done.")
         else:
             assert os.path.exists(self.index_path)
-            self.index.load_index(self.index_path)
+            self.index.load_index(index_load_path)
 
     def _search(self, text: Union[str, List[str]], max_num_results: int, return_embeddings=False):
         if isinstance(text, str):

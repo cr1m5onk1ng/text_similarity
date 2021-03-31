@@ -314,7 +314,7 @@ if __name__ == '__main__':
         dataloader = SmartParaphraseDataloader.build_batches(valid_dataset, args.batch_size, mode="standard", config=configuration, sentence_pairs=False)
 
         sentence_model = SentenceTransformerWrapper.load_pretrained(
-            path=args.pretrained_model_path,
+            path=args.model,
             params=configuration,
             merge_strategy=SentenceBertCombineStrategy(),
             loss = SoftmaxLoss(params=configuration)

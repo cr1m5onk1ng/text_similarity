@@ -1,9 +1,8 @@
 from .modeling import BaseEncoderModel
 from src.modules.pooling import *
-from .losses import SoftmaxLoss
+from src.models.losses import Loss
 from src.modules.contextual_embedder import ContextualEmbedder
 import torch
-from torch import nn
 from src.configurations import config as config
 
 
@@ -11,40 +10,43 @@ class WordEncoderModel(BaseEncoderModel):
     def __init__(
         self, 
         pooling_strategy: PoolingStrategy, 
-        pooler: Pooler, 
         *args, 
+        merge_strategy: MergingStrategy = None,
+        loss: Loss = None,
         **kwargs):
         super().__init__(*args, **kwargs)
         self.set_hidden_size(paraphrase=False)
         if self.params.model_parameters.use_pretrained_embeddings:
             context_pooler = WordPoolingStrategy()
             self.pooling_strategy = WordSensePoolingStrategy(
+                params=self.params,
                 context_pooler=context_pooler,
                 return_combined=self.params.senses_as_features,
             )
         else:
-            self.pooling_strategy = pooling_strategy()
-        self.pooler = pooler(self.pooling_strategy, self.normalize)
+            self.pooling_strategy = pooling_strategy(params=self.params)
+        self.merge_strategy = merge_strategy
+        self.loss = loss(params=self.params)
         
     def forward(self, features: WordFeatures, **kwargs):
-        embeddings = self.context_embedder(**features.to_dict())
+        embeddings = self.context_embedder(**features.embeddings_features.to_dict())[0]
         if self.params.model_parameters.use_pretrained_embeddings:
-            pooled = self.pooler(
+            pooled = self.pooling_strategy(
                 embeddings=embeddings, 
-                features=features, 
+                features=features.embeddings_features, 
                 **kwargs 
             )
         else:
-            pooled = self.pooler(embeddings, features)
-        return pooled
+            pooled = self.pooling_strategy(embeddings, features.embeddings_features)
+        return self.loss(pooled, features)
 
     def encode(self, features: WordFeatures, **kwargs):
         with torch.no_grad():
-            encoded = self.embedder(**features.to_dict())
-            pooled = self.pooler(encoded, features)
+            encoded = self.context_embedder(**features.to_dict())
+            pooled = self.pooling_strategy(encoded, features.embeddings_features)
             return pooled
 
-
+"""
 class WordClassifierModel(BaseEncoderModel):
     def __init__(
         self, 
@@ -75,7 +77,7 @@ class WordClassifierModel(BaseEncoderModel):
         encoded_1 = self.encoder.encode(features.w1_features)
         encoded_2 = self.encoder.encode(features.w2_features)
         return self.merge_strategy(features, encoded_1, encoded_2)
-
+"""
 
 class GWSCModel(BaseEncoderModel):
     def __init__(self, senses_as_features=False, **kwargs):

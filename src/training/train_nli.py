@@ -93,7 +93,6 @@ if __name__ == "__main__":
         context_embedder=embedder,
         loss = SoftmaxLoss,
         pooling_strategy = POOLING_STRATEGIES[args.pooling_strategy],
-        pooler = EmbeddingsPooler,
         merge_strategy = SentenceBertCombineStrategy
     )
 

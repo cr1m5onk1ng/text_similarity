@@ -1,4 +1,5 @@
 import os
+from src.models.modeling import BaseEncoderModel
 from src.configurations.config import Configuration
 import torch
 from tqdm import tqdm
@@ -117,11 +118,17 @@ class Learner:
         return sum(vals) / len(vals)
 
     def step(self, data, b_idx):
-        model_output = self.model(data)
-        loss = model_output.loss
-        logits = None
-        if hasattr(model_output, "predictions"):
-            logits = model_output.predictions
+        if isinstance(self.model, BaseEncoderModel):
+            model_output = self.model(data)
+            loss = model_output.loss
+            if hasattr(model_output, "predictions"):
+                logits = model_output.predictions
+        else:
+            if not isinstance(data, dict):
+                data = data.to_dict()
+            model_output = self.model(**data)
+            loss = model_output[0]
+            logits = model_output[1]
         if self.accumulation_steps > 1:
             loss = loss / self.accumulation_steps
         loss.backward()
@@ -133,12 +140,19 @@ class Learner:
     def mixed_precision_step(self, data, b_idx):
         logits = None
         with amp.autocast():
-            model_output = self.model(data)
-            loss = model_output.loss
-            if hasattr(model_output, "predictions"):
-                logits = model_output.predictions
+            if isinstance(self.model, BaseEncoderModel):
+                model_output = self.model(data)
+                loss = model_output.loss
+                if hasattr(model_output, "predictions"):
+                    logits = model_output.predictions
+            else:
+                if not isinstance(data, dict):
+                    data = data.to_dict()
+                model_output = self.model(**data)
+                loss = model_output[0]
+                logits = model_output[1]
         if self.accumulation_steps > 1:
-                loss = loss / self.accumulation_steps
+            loss = loss / self.accumulation_steps
         scale_before_step = self.scaler.get_scale()
         self.scaler.scale(loss).backward()
         self.scaler.unscale_(self.optimizer)
@@ -162,6 +176,15 @@ class Learner:
         if (b_idx + 1) % self.accumulation_steps == 0:
             xm.optimizer_step(self.optimizer, barrier = not multi_core)
         return loss, logits
+
+
+    def to_device(self, data, device):
+        if isinstance(data, dict):
+            for k in data:
+               if isinstance(data[k], torch.Tensor):
+                   data[k] = data[k].to(device)   
+        else:
+            data.to(device) 
         
       
     def train_fn(self, data_loader):
@@ -182,7 +205,7 @@ class Learner:
         self.model.train()
         results = []
         for b_idx, data in enumerate(iterator):
-            data.to_device(self.params.device)
+            self.to_device(data, self.params.device)
             skip_scheduler = False
             if self.use_tpu:
                 loss, logits = self._tpu_step(data, b_idx)
@@ -199,15 +222,18 @@ class Learner:
                 if not skip_scheduler:
                     self.scheduler.step()
         
-            losses.update(loss.item(), data_loader.get_batch_size)
+            losses.update(loss.item(), self.params.batch_size)
             if meters is not None:
+                if isinstance(data, dict):
+                    labels = data["labels"].cpu().numpy()
+                else:
                     labels = data.labels.cpu().numpy()
-                    if logits is not None:
-                        logits = logits.detach().cpu().numpy()
-                        for m in meters.metrics:
-                            m.update(logits, labels, n=data_loader.get_batch_size)
-                    if not self.use_tpu:
-                        iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+                if logits is not None:
+                    logits = logits.detach().cpu().numpy()
+                    for m in meters.metrics:
+                        m.update(logits, labels, n=self.params.batch_size)
+                if not self.use_tpu:
+                    iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
             if not self.use_tpu:
                 if meters is not None:
                     iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
@@ -235,24 +261,45 @@ class Learner:
         with torch.no_grad():
             iterator = tqdm(data_loader, total=len(data_loader))
             for b_idx, data in enumerate(iterator):
-                data.to_device(self.params.device)
+                self.to_device(data, self.params.device)
                 if self.fp16:
                     with amp.autocast():
-                        model_output = self.model(data)
+                        if isinstance(self.model, BaseEncoderModel):
+                            model_output = self.model(data)
+                            loss = model_output.loss
+                            if hasattr(model_output, "predictions"):
+                                logits = model_output.predictions
+                        else:
+                            if not isinstance(data, dict):
+                                data = data.to_dict()
+                            model_output = self.model(**data)
+                            loss = model_output[0]
+                            logits = model_output[1]
                 else:
-                    model_output = self.model(data)
-                loss = model_output.loss
-                logits = model_output.predictions
+                    if not isinstance(self.model, BaseEncoderModel):
+                        if not isinstance(data, dict):
+                            data = data.to_dict()
+                        model_output = self.model(**data)
+                        loss = model_output.loss
+                        if hasattr(model_output, "predictions"):
+                            logits = model_output.predictions
+                    else:
+                        model_output = self.model(data)
+                        loss = model_output[0]
+                        logits = model_output[1]
                 
                 if self.use_mean_loss:
                     loss = loss.mean()
                 losses.update(loss.item(), self.params.batch_size)
                 if meters is not None:
-                    labels = data.labels.cpu().numpy()
+                    if isinstance(data, dict):
+                        labels = data["labels"].cpu().numpy()
+                    else:
+                        labels = data.labels.cpu().numpy()
                     if logits is not None:
                         logits = logits.detach().cpu().numpy()
                         for m in meters.metrics:
-                            m.update(logits, labels, n=data_loader.get_batch_size)
+                            m.update(logits, labels, n=self.params.batch_size)
                     iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
                 else:
                     iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})

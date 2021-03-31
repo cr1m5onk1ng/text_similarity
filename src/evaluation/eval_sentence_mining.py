@@ -40,9 +40,9 @@ if __name__ == "__main__":
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=256)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
-    parser.add_argument('--student_model', type=str, dest="student_model", default="sentence-transformers/quora-distilbert-multilingual")
-    parser.add_argument('--teacher_model', type=str, dest="teacher_model", default="sentence-transformers/paraphrase-xlm-r-multilingual-v1")
-    parser.add_argument('--perc', type=float, dest="corpus_percentage", default=0.005)
+    parser.add_argument('--student_model', type=str, dest="student_model", default="../compression/output/sencoder-dmbert-quora-4layers")
+    parser.add_argument('--teacher_model', type=str, dest="teacher_model", default="sentence-transformers/quora-distilbert-multilingual")
+    parser.add_argument('--perc', type=float, dest="corpus_percentage", default=0.01)
     parser.add_argument('--nq', type=int, dest="num_queries", default=10)
     parser.add_argument('--topk', type=int, dest="topk", default=3)
     parser.add_argument('--sbert', type=bool, dest="use_sbert",default=False)
@@ -69,7 +69,7 @@ if __name__ == "__main__":
         save_path = "./results",
         batch_size = 16,
         device = torch.device(args.device),
-        tokenizer = transformers.AutoTokenizer.from_pretrained(args.student_model, use_fast=True)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(args.teacher_model, use_fast=True)
     )
 
   

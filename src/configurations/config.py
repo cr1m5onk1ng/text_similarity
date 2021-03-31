@@ -82,7 +82,7 @@ DIMENSIONS_MAP = {
     "lmms": 1024
 }
 
-
+"""
 CONFIG = WordModelConfiguration(
     model_parameters = None,
     model = MODELS["large"],
@@ -98,6 +98,6 @@ CONFIG = WordModelConfiguration(
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODELS["large"]),
     pretrained_embeddings_dim = DIMENSIONS_MAP["ares_mono"],
 )
-
+"""
 
 
