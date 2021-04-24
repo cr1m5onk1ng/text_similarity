@@ -1,0 +1,14 @@
+ ------- Running training for model: distilbert-japanese-nikkei -------- 
+
+Params: batch size: 16; number of epochs: 4; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 768; lr: 2e-05; merge strategy: None
+validation > epoch: 1; loss: 0.8167811747196425; accuracy: 0.7111489546722707; 
+training > epoch: 1; loss: 1.1841914896888945; accuracy: 0.6085652751610727; 
+validation > epoch: 2; loss: 0.7511706629832061; accuracy: 0.7297909344541469; 
+training > epoch: 2; loss: 0.7509716355555915; accuracy: 0.7331440583350778; 
+validation > epoch: 3; loss: 0.7450344942517146; accuracy: 0.7335886263995072; 
+training > epoch: 3; loss: 0.6515477006866598; accuracy: 0.7646982502965599; 
+validation > epoch: 4; loss: 0.7537728654719921; accuracy: 0.7331470343128375; 
+training > epoch: 4; loss: 0.5906545996080783; accuracy: 0.7847414840788035; 
+
+

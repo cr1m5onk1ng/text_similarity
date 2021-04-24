@@ -1,16 +1,9 @@
 import torch
 from typing import Dict, Union
 from torch import nn 
-from torch.nn import functional as F
-from src.modules.contextual_embedder import ContextualEmbedder
-import src.configurations.config as config
-from src.configurations.config import ModelParameters, Configuration
-from src.models.losses import *
-import src.utils.utils as utils
-from src.utils import activations
-from src.modules.pooling import *
-from abc import ABC, abstractmethod
+from src.configurations.config import Configuration
 import transformers
+import os
 
 
 class BaseEncoderModel(nn.Module):
@@ -44,10 +37,7 @@ class BaseEncoderModel(nn.Module):
         return self.params.model_parameters.model_name
 
     def set_hidden_size(self, paraphrase=True):
-        if isinstance(self.context_embedder, SentenceTransformer):
-            embedder_size = self.context_embedder.get_sentence_embedding_dimension()
-        else:
-            embedder_size = self.embedding_size
+        embedder_size = self.embedding_size
         pretrained_size = self.params.pretrained_embeddings_dim
         hidden_size = embedder_size if \
                     not paraphrase else \
@@ -58,6 +48,13 @@ class BaseEncoderModel(nn.Module):
             else:
                 hidden_size = embedder_size + pretrained_size
         self.params.model_parameters.hidden_size = hidden_size
+
+    def save_pretrained(self, path):
+        assert(path is not None)
+        if not os.path.exists(path):
+            os.makedirs(path)
+        self.context_embedder.save_pretrained(path)
+        self.params.tokenizer.save_pretrained(path)
 
     @property
     def config(self):
@@ -84,98 +81,71 @@ class BaseEncoderModel(nn.Module):
         raise NotImplementedError()
 
 
-class EmbeddingsAlignmentModel(BaseEncoderModel):
-    def __init__(self, model_path):
-        super().__init__()
+class TransformerWrapper(BaseEncoderModel):
+    def __init__(self, pooler, loss, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pooler = pooler
+        self.loss = loss
 
-        #load the model
-        self.model = SiameseEmbedderModel()
-        self.model.load_state_dict(torch.load(model_path))
-
-    def forward(self, src_lang_features, target_lang_features, **kwargs):
-
-        src_embeddings = self.model(**src_lang_features)
-        target_embeddings = self.model(**target_lang_features)
-
-        mse = ((src_embeddings - target_embeddings)**2).mean()
-        mse*=100
-
-        return torch.stack(src_embeddings, target_embeddings, dim=0), mse
-
-        
-class MBERTClassifier(BaseEncoderModel):
-    def __init__(self, num_classes=2, senses_as_features=False, strategy="avg", **kwargs):
-        super().__init__(model_name="mBERT", **kwargs)
-        self.num_classes = num_classes
-        self.embedder = ContextualEmbedder(model_name=config.MODEL, retrain=self.freeze_weights) 
-        self.embeddings_size = self.embedder.embedding_size 
-        self.senses_as_features = senses_as_features
-        self.strategy = strategy
-        self.pooler = AvgPooler(
-            use_pretrained_embeddings=self.use_pretrained_embeddings, 
-            embeddings_size=self.embeddings_size, 
-            senses_as_features=senses_as_features, 
-            strategy=self.strategy,
-            normalize=self.normalize)
-        #self.dropout = nn.Dropout(self.dropout_prob)
-        if self.use_pretrained_embeddings:
-            if self.senses_as_features:
-                self.hidden_size = self.embeddings_size + embeddings_config.SENSE_EMBEDDING_DIMENSION
-            else:
-                self.hidden_size = embeddings_config.SENSE_EMBEDDING_DIMENSION 
+    def forward(self, features, return_output=False, head_mask=None):
+        if isinstance(features, dict):
+            input_features = features
         else:
-            self.hidden_size = self.embedder.embedding_size 
-        self.classifier = nn.Linear(self.hidden_size, self.num_classes)
-        self.loss = nn.CrossEntropyLoss()
+            input_features = features.to_dict()
+        if head_mask is not None:
+            input_features["head_mask"] = head_mask
+        model_output = self.context_embedder(**input_features, output_attentions=return_output, output_hidden_states=return_output)
+        if self.pooler is not None:
+            pooled = self.pooler(model_output[0], features)
+            output = self.loss(pooled, features)
+        else:
+            output = model_output[0]
+        if return_output:
+            return output, model_output
+        return output
 
-    def forward(self, input_ids, token_type_ids, attention_mask, sentences_words_positions, labels, **kwargs):
-        embed = self.embedder(input_ids, token_type_ids, attention_mask)
-        
-        pooled = self.pooler(
-            embed,
-            attention_mask,
-            positions=sentences_words_positions)
-
-        #out = self.dropout(pooled)
-    
-        logits = self.classifier(pooled)
-        loss = self.loss(logits.view(-1, self.num_classes), labels)
-        return logits, loss
-
-    def encode(self, sentence_1_features, sentence_2_features, **kwargs):
-        self.use_pretrained_embeddings = False
-        self.pooler.use_pretrained_embeddings = False
-
-        embed_1 = self.embedder(**sentence_1_features)
-        
-        pooled_1 = self.pooler(
-            embed_1,
-            sentence_1_features["attention_mask"],
-            positions=None
+    @classmethod
+    def load_pretrained(cls, path, pooler=None, loss=None, params=None):
+        if params is None:
+            params = torch.load(os.path.join(path, "model_config.bin"))
+        embedder_config = transformers.AutoConfig.from_pretrained(path)
+        print(f"Current model config: {embedder_config}")
+        context_embedder = transformers.AutoModel.from_pretrained(path, config=embedder_config)
+        return cls(
+            params=params,
+            context_embedder=context_embedder,
+            pooler=pooler,
+            loss=loss
         )
 
-        embed_2 = self.embedder(**sentence_2_features)
-        
-        pooled_2 = self.pooler(
-            embed_2,
-            sentence_2_features["attention_mask"],
-            positions=None
+
+class OnnxTransformerWrapper(BaseEncoderModel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        hidden_size = self.params.model_parameters.hidden_size
+        self.linear = nn.Linear(hidden_size, hidden_size)
+        self.activation = nn.Tanh()
+
+    def forward(self, input_ids, attention_mask, token_type_ids=None):
+        if token_type_ids is not None:
+            model_output = self.context_embedder(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        else:
+            model_output = self.context_embedder(input_ids=input_ids, attention_mask=attention_mask)
+        return self.activation(self.linear(model_output[0]))
+
+    @classmethod
+    def load_pretrained(cls, path, pooler=None, loss=None, params=None):
+        if params is None:
+            params = torch.load(os.path.join(path, "model_config.bin"))
+        embedder_config = transformers.AutoConfig.from_pretrained(path)
+        context_embedder = transformers.AutoModel.from_pretrained(path, config=embedder_config)
+        return cls(
+            params=params,
+            context_embedder=context_embedder,
         )
-    
-        return torch.stack([pooled_1, pooled_2], dim=0)
+            
+        
 
-
-
-
-if __name__ == '__main__':
-    from src.dataset.dataset import *
-
-    model = SiameseEmbedderModel(use_pretrained_embeddings=True, loss="contrastive").to(config.DEVICE)   
-
-    dataset = utils.load_file("../data/cached/paswx_en")
-    dataloader = SmartParaphraseDataloader.build_batches(dataset, 16)
-    out = model(**dataloader.batches[0])
-    print(out[0].shape)
 
 
 

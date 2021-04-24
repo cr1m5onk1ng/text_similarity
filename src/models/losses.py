@@ -20,11 +20,15 @@ class SoftmaxLoss(Loss):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.classifier = nn.Linear(self.params.model_parameters.hidden_size, self.params.model_parameters.num_classes)
+        if self.params.dropout_prob is not None:
+            self.dropout = nn.Dropout(self.params.dropout_prob)
         self.loss_function = nn.CrossEntropyLoss()
 
     def forward(self, hidden_state, features):
         labels = features.labels 
         logits = self.classifier(hidden_state)
+        if hasattr(self, "dropout"):
+            logits = self.dropout(logits)
         loss = self.loss_function(
             logits.view(-1, self.params.model_parameters.num_classes), 
             labels.view(-1)

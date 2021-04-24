@@ -1,0 +1,14 @@
+ ------- Running training for model: wiki-topics-mbert-fold-1 -------- 
+
+Params: batch size: 16; number of epochs: 4; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 768; lr: 0.0001; merge strategy: None
+validation > epoch: 1; loss: 2.0470616497892014; accuracy: 0.40877659574468084; 
+training > epoch: 1; loss: 2.4408258316364693; accuracy: 0.26941489361702126; 
+validation > epoch: 2; loss: 1.8124361515045166; accuracy: 0.47819148936170214; 
+training > epoch: 2; loss: 1.912700250808229; accuracy: 0.4497340425531915; 
+validation > epoch: 3; loss: 1.6572388019967585; accuracy: 0.535372340425532; 
+training > epoch: 3; loss: 1.5298063963017565; accuracy: 0.5622340425531915; 
+validation > epoch: 4; loss: 1.4838861168699062; accuracy: 0.5952127659574468; 
+training > epoch: 4; loss: 1.2042328806633644; accuracy: 0.6654255319148936; 
+
+

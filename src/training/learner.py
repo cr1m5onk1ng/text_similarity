@@ -1,10 +1,10 @@
 import os
-from src.models.modeling import BaseEncoderModel
 from src.configurations.config import Configuration
 import torch
 from tqdm import tqdm
 from torch.cuda import amp
 from src.utils.metrics import AverageMeter, AccuracyMeter, Metrics
+from src.models.modeling import BaseEncoderModel
 from transformers.optimization import AdamW
 from transformers import get_linear_schedule_with_warmup
 from typing import Union, Dict, List
@@ -43,7 +43,8 @@ class Learner:
         use_mean_loss: bool = False,
         metrics: Union[Dict[str, List[AverageMeter]], None] = None,
         verbose: bool = True,
-        eval_in_train: bool = False
+        eval_in_train: bool = False,
+        replacing_rate_scheduler = None,
     ):
         self.params = params
         self.config_name = config_name
@@ -65,7 +66,7 @@ class Learner:
             self.scaler = amp.GradScaler() 
         self.optimizer = Learner.set_up_optimizer(self.model, self.params.lr)
         self.scheduler = Learner.set_up_scheduler(self.optimizer, self.steps, self.warm_up_steps)
-        
+        self.replacing_rate_scheduler = replacing_rate_scheduler
     @staticmethod
     def set_up_optimizer(model, lr):
         param_optimizer = list(model.named_parameters())
@@ -125,8 +126,12 @@ class Learner:
                 logits = model_output.predictions
         else:
             if not isinstance(data, dict):
-                data = data.to_dict()
-            model_output = self.model(**data)
+                features = data.to_dict()
+                labels = data.labels
+            else:
+                features = data
+                labels = data["labels"]
+            model_output = self.model(**features, labels=labels)
             loss = model_output[0]
             logits = model_output[1]
         if self.accumulation_steps > 1:
@@ -147,8 +152,12 @@ class Learner:
                     logits = model_output.predictions
             else:
                 if not isinstance(data, dict):
-                    data = data.to_dict()
-                model_output = self.model(**data)
+                    features = data.to_dict()
+                    labels = data.labels
+                else:
+                    features = data
+                    labels = data["labels"]
+                model_output = self.model(**features, labels=labels)
                 loss = model_output[0]
                 logits = model_output[1]
         if self.accumulation_steps > 1:
@@ -221,6 +230,8 @@ class Learner:
             if self.scheduler is not None:
                 if not skip_scheduler:
                     self.scheduler.step()
+            if self.replacing_rate_scheduler is not None:
+                self.replacing_rate_scheduler.step()
         
             losses.update(loss.item(), self.params.batch_size)
             if meters is not None:
@@ -271,23 +282,30 @@ class Learner:
                                 logits = model_output.predictions
                         else:
                             if not isinstance(data, dict):
-                                data = data.to_dict()
-                            model_output = self.model(**data)
+                                features = data.to_dict()
+                                labels = data.labels
+                            else:
+                                features = data
+                                labels = data["labels"]
+                            model_output = self.model(**features, labels=labels)
                             loss = model_output[0]
                             logits = model_output[1]
                 else:
-                    if not isinstance(self.model, BaseEncoderModel):
-                        if not isinstance(data, dict):
-                            data = data.to_dict()
-                        model_output = self.model(**data)
+                    if isinstance(self.model, BaseEncoderModel):
+                        model_output = self.model(data)
                         loss = model_output.loss
                         if hasattr(model_output, "predictions"):
                             logits = model_output.predictions
                     else:
-                        model_output = self.model(data)
+                        if not isinstance(data, dict):
+                            features = data.to_dict()
+                            labels = data.labels
+                        else:
+                            features = data
+                            labels = data["labels"]
+                        model_output = self.model(**features, labels=labels)
                         loss = model_output[0]
                         logits = model_output[1]
-                
                 if self.use_mean_loss:
                     loss = loss.mean()
                 losses.update(loss.item(), self.params.batch_size)

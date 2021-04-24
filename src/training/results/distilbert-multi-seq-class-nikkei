@@ -1,0 +1,14 @@
+ ------- Running training for model: distilbert-multi-seq-class-nikkei -------- 
+
+Params: batch size: 16; number of epochs: 4; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 768; lr: 2e-05; merge strategy: None
+validation > epoch: 1; loss: 0.820058230379113; accuracy: 0.7040540418131092; 
+training > epoch: 1; loss: 1.0501530803030372; accuracy: 0.6331074244644477; 
+validation > epoch: 2; loss: 0.7673870665260323; accuracy: 0.7227549005398746; 
+training > epoch: 2; loss: 0.7521735778113919; accuracy: 0.7286538651640965; 
+validation > epoch: 3; loss: 0.7713683849613845; accuracy: 0.7260815609261205; 
+training > epoch: 3; loss: 0.6271048408837161; accuracy: 0.7685473507315144; 
+validation > epoch: 4; loss: 0.7944822221032808; accuracy: 0.7259343635638972; 
+training > epoch: 4; loss: 0.5410912961090112; accuracy: 0.7957970628939595; 
+
+

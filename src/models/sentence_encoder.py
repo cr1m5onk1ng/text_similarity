@@ -51,19 +51,28 @@ class OnnxSentenceTransformerWrapper(BaseEncoderModel):
 
 
 class SentenceTransformerWrapper(BaseEncoderModel):
-    def __init__(self, pooler: PoolingStrategy, merge_strategy: MergingStrategy, loss: Loss, *args, projection_dim=None, **kwargs):
+    def __init__(
+        self, 
+        pooler: PoolingStrategy, 
+        merge_strategy: MergingStrategy, 
+        loss: Loss, 
+        *args, 
+        parallel_mode=True,
+        projection_dim=None, 
+        **kwargs):
         super().__init__(*args, **kwargs)
         self.pooler = pooler
         if merge_strategy is not None:
             self.merge_strategy = merge_strategy
         if loss is not None:
             self.loss = loss
+        self.parallel_mode = parallel_mode
         hidden_size = self.context_embedder.config.hidden_size if not 'distilbert' in self.params.model else self.context_embedder.config.dim
         if projection_dim is not None:
             self.projection = nn.Linear(hidden_size, projection_dim, bias=False)
 
     def forward(self, features, parallel_mode=True, return_output=False, head_mask=None):
-        if parallel_mode:
+        if self.parallel_mode:
             features_1 = features.sentence_1_features.to_dict()
             features_2 = features.sentence_2_features.to_dict()
             if head_mask is not None:
@@ -79,14 +88,12 @@ class SentenceTransformerWrapper(BaseEncoderModel):
                 embed_2 = self.pooler(embed_features_2, features.sentence_2_features)
             merged = self.merge_strategy(features, embed_1, embed_2)
         else:
-            assert isinstance(features, EmbeddingsFeatures)
             input_features = features.to_dict()
             if head_mask is not None:
                 input_features['head_mask'] = head_mask
             model_output = self.context_embedder(**input_features, output_attentions=return_output, output_hidden_states=return_output)
             if hasattr(self, "projection"):
                 pooled = self.pooler(model_output[0], features)
-                print(f"Pooled dimension: {pooled.shape}")
                 pooled = self.projection(pooled)
             else:
                 pooled = self.pooler(model_output[0], features)
@@ -151,7 +158,7 @@ class SentenceTransformerWrapper(BaseEncoderModel):
         return self.context_embedder.config.hidden_size
 
     @classmethod
-    def load_pretrained(cls, path, merge_strategy=None, loss=None, params=None):
+    def load_pretrained(cls, path, merge_strategy=None, loss=None, params=None, parallel_mode=True):
         if params is None:
             params = torch.load(os.path.join(path, "model_config.bin"))
         embedder_config = transformers.AutoConfig.from_pretrained(path)
@@ -162,7 +169,8 @@ class SentenceTransformerWrapper(BaseEncoderModel):
             context_embedder=context_embedder,
             merge_strategy=merge_strategy,
             pooler=pooler,
-            loss=loss
+            loss=loss,
+            parallel_mode=parallel_mode
         )
 
 

@@ -1,0 +1,16 @@
+ ------- Running training for model: albert-japanese-nikkei -------- 
+
+Params: batch size: 16; number of epochs: 5; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 768; lr: 2e-05; merge strategy: None
+validation > epoch: 1; loss: 0.7620887897506304; accuracy: 0.7295296167247387; 
+training > epoch: 1; loss: 1.0655838269260707; accuracy: 0.6235490187450498; 
+validation > epoch: 2; loss: 0.6689599318793271; accuracy: 0.7538109756097561; 
+training > epoch: 2; loss: 0.7700734308427641; accuracy: 0.7193434832350611; 
+validation > epoch: 3; loss: 0.6594638521215175; accuracy: 0.7592552264808362; 
+training > epoch: 3; loss: 0.6709025490055328; accuracy: 0.7503212179882074; 
+validation > epoch: 4; loss: 0.6630386145467438; accuracy: 0.7582752613240418; 
+training > epoch: 4; loss: 0.5965053685393549; accuracy: 0.7761264630819327; 
+validation > epoch: 5; loss: 0.660485197660166; accuracy: 0.756859756097561; 
+training > epoch: 5; loss: 0.5469371019232394; accuracy: 0.7899630379301241; 
+
+

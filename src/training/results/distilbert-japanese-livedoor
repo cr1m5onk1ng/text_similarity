@@ -1,0 +1,10 @@
+ ------- Running training for model: distilbert-japanese-livedoor -------- 
+
+Params: batch size: 16; number of epochs: 4; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 768; lr: 2e-05; merge strategy: None
+training > epoch: 1; loss: 0.7962751203335805; accuracy: 0.7635574837310195; 
+training > epoch: 2; loss: 0.2445796686376156; accuracy: 0.9308568329718004; 
+training > epoch: 3; loss: 0.12403434684496058; accuracy: 0.9655639913232104; 
+training > epoch: 4; loss: 0.0670156226227759; accuracy: 0.9838665943600867; 
+
+

@@ -3,6 +3,7 @@ from sentence_transformers.SentenceTransformer import SentenceTransformer
 from torch.cuda import current_blas_handle
 import src.configurations.config as config
 from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import train_test_split
 from collections import OrderedDict
 import src.utils.utils as utils
 import torch
@@ -10,12 +11,60 @@ import json
 import string
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Union, List, Dict
+from typing import Any, Optional, Union, List, Dict, Tuple
 import random
 from tqdm import tqdm
 
+class Dataset():
+    def __init__(self, examples: List[Any]):
+        self._examples = examples
+    
+    def __len__(self):
+        return len(self.examples)
+    
+    def __getitem__(self, i):
+        return self.examples[i]
 
-class KFoldStratifier:
+    def get_by_label(self, label: Any) -> List[Any]:
+        return list(filter(lambda ex: ex.label == label, self.examples))
+
+    def group_by_labels(self) -> Dict[Any, List[Any]]:
+        dataset_labels = set(self.labels)
+        groups = {}
+        for lab in dataset_labels:
+            groups[lab] = self.get_by_label(lab)
+        return groups
+
+    def split_dataset(self, test_perc: float=0.2) -> Tuple[List[Any], List[Any]]:
+        """
+        splits the dataset in train and test portions ensuring 
+        all the labels are represented proportionally in each split
+        """
+        assert test_perc > 0 and test_perc < 1
+        groups = self.group_by_labels()
+        train_split = []
+        test_split = []
+        for label in groups:
+            examples = groups[label]
+            split_index = int(len(examples)*test_perc)
+            test_examples = examples[0:split_index]
+            train_examples = examples[split_index:]
+            train_split.extend(train_examples)
+            test_split.extend(test_examples)
+        random.shuffle(train_split)
+        random.shuffle(test_split)
+        return train_split, test_split
+
+    @property
+    def examples(self):
+        return self._examples
+
+    @property
+    def labels(self):
+        return list(map(lambda ex: ex.label, self._examples))
+
+
+class CrossValidationDataset:
     def __init__(self, train_splits, test_splits):
         self.__train_splits = train_splits
         self.__test_splits = test_splits
@@ -25,27 +74,28 @@ class KFoldStratifier:
 
     def __len__(self):
         return len(self.train_splits)
+
+    def train_test_split(self, split_n, test_size=0.2):
+        train_split = self.__train_splits[split_n]
+        test_split = self.__test_splits[split_n]
+        dataset = Dataset(train_split.examples + test_split.examples)
+        train_split, test_split, _, _ = train_test_split(dataset.examples, dataset.labels, test_size=test_size)
+
     
     @classmethod
-    def create_folds(cls, dataset, n_splits, stratifier=None, shuffle=True, random_state=1):
-        if stratifier is None:
-            stratifier = StratifiedKFold(n_splits=n_splits, shuffle=shuffle, random_state=random_state)
+    def create_folds(cls, dataset: Dataset, n_splits: int, fold_strategy: Optional[Any]=None, shuffle: bool=True, random_state: int=43):
+        if fold_strategy is None:
+            fold_strategy = StratifiedKFold(n_splits=n_splits, shuffle=shuffle, random_state=random_state)
         train_splits = []
         test_splits = []
-        for train_indexes, test_indexes in stratifier.split(dataset.get_examples, dataset.get_labels):
+        for train_indexes, test_indexes in fold_strategy.split(dataset.examples, dataset.labels):
             train_examples = []
             test_examples = []
-            train_labels = []
-            test_labels = []
             for train_index, test_index in zip(train_indexes, test_indexes):
-                train_examples.append(dataset.get_examples[train_index])
-                test_examples.append(dataset.get_examples[test_index])
-                train_labels.append(dataset.get_labels[test_index])
-                test_labels.append(dataset.get_labels[test_index])
-            train_split = Dataset(train_examples, train_labels)
-            test_split = Dataset(test_examples, test_labels)
-            train_splits.append(train_split)
-            test_splits.append(test_split)
+                train_examples.append(dataset.examples[train_index])
+                test_examples.append(dataset.examples[test_index])
+            train_splits.append(Dataset(train_examples))
+            test_splits.append(Dataset(test_examples))
         return cls(train_splits, test_splits)
 
     @property
@@ -77,25 +127,6 @@ class DocumentCorpusExample():
         self.document = document
         self.sentences = sentences
         self.id = id
-
-
-class Dataset():
-    def __init__(self, examples, labels):
-        self.examples, self.labels = examples, labels
-    
-    def __len__(self):
-        return len(self.examples)
-    
-    def __getitem__(self, i):
-        return self.examples[i], self.labels[i]
-
-    @property
-    def get_examples(self):
-        return self.examples
-
-    @property
-    def get_labels(self):
-        return self.labels
 
 
 class DocumentCorpusDataset:
@@ -216,7 +247,7 @@ class EmbeddingsFeatures:
     def to(self, device):
         self.input_ids = self.input_ids.to(device)
         self.attention_mask = self.attention_mask.to(device)
-        if hasattr(self, "token_type_ids"):
+        if self.token_type_ids is not None:
             self.token_type_ids = self.token_type_ids.to(device)
 
 
@@ -246,6 +277,9 @@ class DataLoaderFeatures(DataFeatures):
     def to(self, device):
         super().to(device)
         self.embeddings_features.to(device)
+
+    def to_dict(self):
+        return self.embeddings_features.to_dict()
 
 
 @dataclass
@@ -376,7 +410,7 @@ class SmartParaphraseDataloader(DataLoader):
             dataset = sorted(dataset, key=key)
             batches = SmartParaphraseDataloader.smart_batching_distillation(dataset, batch_size, config=config)
         if mode == "sequence":
-            key = lambda x: len(x[0].content)
+            key = lambda x: len(x.content)
             dataset = sorted(dataset, key=key)
             batches = SmartParaphraseDataloader.smart_batching_sequence(dataset, batch_size, config=config)
 
@@ -750,25 +784,29 @@ class SmartParaphraseDataloader(DataLoader):
             to_take = min(batch_size, len(dataset))
             select = random.randint(0, len(dataset)-to_take)
             batch = dataset[select:select+to_take]             
-            
-            all_sentences = []
+            labels = []
+            documents = []
             for example in batch:
-                all_sentences.append(example.content)
-         
+                documents.append(example.content)
+                labels.append(example.label)
             encoded_dict = config.tokenizer(
-                text=all_sentences,
+                text=documents,
                 add_special_tokens=True,
                 padding='longest',
                 truncation=True,
                 max_length=config.sequence_max_len,
                 return_attention_mask=True,
-                return_token_type_ids=True,
+                return_token_type_ids=False,
                 return_tensors='pt'
             )
 
             features = EmbeddingsFeatures.from_dict(encoded_dict)
+            dataloader_features = DataLoaderFeatures(
+                embeddings_features = features,
+                labels = torch.LongTensor(labels)
+            )
 
-            batches.append(features)
+            batches.append(dataloader_features)
 
             del dataset[select:select+to_take]
 

@@ -12,11 +12,11 @@ class EntailmentExample(ParaphraseExample):
 
 
 class EntailmentDataset(Dataset):
-    def __init__(self, examples, labels):
-        super().__init__(examples, labels)
+    def __init__(self, examples):
+        super().__init__(examples)
 
     def __getitem__(self, i):
-        return self.examples[i], self.labels[i]
+        return self.examples[i]
 
     def __len__(self):
         return len(self.examples)
@@ -51,9 +51,7 @@ class EntailmentDataset(Dataset):
                     if examples_read >= max_examples:
                         break 
         random.shuffle(examples)
-        labels = [ex.get_label for ex in examples]
-        assert(len(labels)) == len(examples)
-        return cls(examples, labels)
+        return cls(examples)
 
     def add_dataset(self, path, max_examples=None):
         label2class = {"contradiction": 0, "entailment": 1, "neutral": 2}

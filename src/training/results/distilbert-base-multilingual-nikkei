@@ -1,0 +1,8 @@
+ ------- Running training for model: distilbert-base-multilingual-nikkei -------- 
+
+Params: batch size: 16; number of epochs: 1; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 768; lr: 2e-05; merge strategy: None
+validation > epoch: 1; loss: 0.7650702055359414; accuracy: 0.7229315373745425; 
+training > epoch: 1; loss: 1.0214480533158714; accuracy: 0.6399933564766357; 
+
+

@@ -25,8 +25,9 @@ class PoolingStrategy(LearningStrategy):
     a pooling strategy for a tensor, usually
     an embedding
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, params, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.params = params
 
     def forward(self, embeddings: torch.Tensor):
         raise NotImplementedError()
@@ -134,7 +135,7 @@ class AvgPoolingStrategy(PoolingStrategy):
 
     def forward(self, embeddings: torch.Tensor, features: EmbeddingsFeatures):
         assert len(embeddings.shape) == 3 #batch, seq_len, embed_size
-        mask = features.attention_mask
+        mask = features.to_dict()["attention_mask"]
         #we expand the mask to include the embed_size dimension
         mask = mask.unsqueeze(-1).expand(embeddings.size()).float()
         #we zero out the weights corresponding to the zero positions
@@ -156,6 +157,20 @@ class CLSPoolingStrategy(PoolingStrategy):
         assert len(embeddings.shape) == 3 #batch, seq_len, embed_size
         #the CLS token corresponds to the first token in the seq_len dimension
         return embeddings[:0:]
+
+
+class BertPoolingStrategy(PoolingStrategy):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        hidden_size = self.params.model_parameters.hidden_size
+        self.linear = nn.Linear(hidden_size, hidden_size)
+        self.activation = nn.Tanh()
+    
+    def forward(self, hidden_states: torch.Tensor, features: EmbeddingsFeatures):
+        cls_token_embedding = hidden_states[:, 0]
+        pooled_output = self.linear(cls_token_embedding)
+        pooled_output = self.activation(pooled_output)
+        return pooled_output
 
 
 class MergingStrategy(LearningStrategy):

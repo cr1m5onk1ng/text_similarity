@@ -6,7 +6,7 @@ import argparse
 from src.dataset.parallel_dataset import *
 from src.configurations import config
 import torch
-from src.modules.model_compression import convert_to_onnx, quantize_model
+from src.modules.model_compression import convert_to_onnx
 
 
 
@@ -14,7 +14,7 @@ if __name__ == '__main__':
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--name', type=str, dest="config_name")
-        parser.add_argument('--model', type=str, dest="model", default="sentence-transformers/bert-base-nli-mean-tokens")
+        parser.add_argument('--model', type=str, dest="model", default="sentence-transformers/quora-distilbert-multilingual")
         parser.add_argument('--save_path', dest="save_path", type=str, default="./output")
 
         args = parser.parse_args()

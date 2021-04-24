@@ -1,37 +1,58 @@
 from dataclasses import dataclass
-import os
-from src.dataset.dataset import Dataset
+from src.utils.wikipedia_extractor import WikipediaExtractor
+from src.dataset.documents_dataset import Document, DocumentDataset
+from src.dataset.dataset import CrossValidationDataset, Dataset
 from typing import Dict, List, Set, Union
 import json
 from tqdm import tqdm
-from src.utils.utils import search_files
-from src.utils.wikipedia_extractor import WikipediaExtractor
 import random
+from src.utils import utils
 
 CATEGORIES = ["スポーツ", "旅行", "ワーク", "芸術", "マスメディア", "教育", "娯楽", "政府", "レジャー活動", "舞台芸術", "フィットネス", "政治", "ゲーミング", 
-                    "宗教", "交通", "戦争", "科学", "哲学の文献", "社会", "ビジネス", "健康", "貨幣", "技術"]
+                    "宗教", "交通", "戦争", "科学", "哲学の文献", "社会", "ビジネス", "健康", "技術"]
+
+CATEGORIES_EN = ["Sports", "Travel", "Work", "The arts", "Mass media", "Education", "Entertainment", "Government", "Leisure activities", "Performing arts", "Physical exercise", "Politics",
+                    "Gaming", "Religion", "Transport", "War", "Science", "Philosophical literature", "Society", "Business", "Health", "Technology", ""]
 
 @dataclass
-class WikipediaDocument:
+class WikipediaDocument(Document):
     id: str
-    title: str
-    content: str
-    category: str
 
-class WikipediaDataset(Dataset):
-    def __init__(self, test_split, test_labels, *args, **kwargs):
+
+class WikipediaDataset(DocumentDataset):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.test_split = test_split
-        self.test_labels = test_labels
 
     def __len__(self):
-        return len(self.documents)
+        return super().__len__()
 
     def __getitem__(self, i):
-        return self.documents[i]
+        return super().__getitem__(i)
 
-    def get_by_category(self, category):
-        return list(map(lambda doc: doc.category==category, self.documents))
+    @staticmethod
+    def split_in_paragraphs(document: WikipediaDocument, max_n_tokens=300) -> List[str]:
+        splitted_documents = []
+        tokens = utils.tokenize(document.content)
+        total_tokens = len(tokens)
+        i = 0
+        current_split_tokens = []
+        for tok in tokens:
+            i += 1
+            if i >= max_n_tokens or i >= total_tokens:
+                i = 0 
+                paragraph = ' '.join(current_split_tokens)
+                splitted_documents.append(
+                    WikipediaDocument(
+                        id = document.id,
+                        title = document.title,
+                        content = paragraph,
+                        label = document.label
+                    )
+                )
+                current_split_tokens = []
+            else:
+                current_split_tokens.append(tok)
+        return splitted_documents
 
     @property
     def train_split(self):
@@ -39,15 +60,14 @@ class WikipediaDataset(Dataset):
 
     @property
     def test_split(self):
-        return Dataset(self.test_split, self.test_labels)
+        return Dataset(self.test_portion, self.test_labels)
 
     @classmethod
-    def from_collection(cls, files, page_ids: Union[Dict[str, str], None]=None, max_n_docs=None, test_perc=0.1):
+    def from_collection(cls, files: List[str], page_ids: Union[Dict[str, str], None]=None, max_n_docs=None, max_n_tokens=None):
         cat_to_label = {}
-        for i in range(CATEGORIES):
+        for i in range(len(CATEGORIES)):
             cat_to_label[CATEGORIES[i]] = i 
         documents = []
-        labels = []
         n = 0
         print("Extracting wikipedia articles. This may take a while")
         iterator = tqdm(files, total=len(files))
@@ -65,24 +85,45 @@ class WikipediaDataset(Dataset):
                             continue
                         else:
                             category = page_ids[id]
-                    labels.append(cat_to_label[category])
                     n += 1
-                    if n >= max_n_docs:
+                    if max_n_docs is not None and n >= max_n_docs:
                         break
-                    documents.append(
-                        WikipediaDocument(
+
+                    document = WikipediaDocument(
                             id = id,
                             title = title,
                             content=text,
-                            category=category
+                            label=cat_to_label[category]
                         )
-                    )
+                    
+                    if max_n_tokens is not None:
+                        splitted_documents = WikipediaDataset.split_in_paragraphs(document, max_n_tokens=max_n_tokens)
+                        documents.extend(splitted_documents)
+                    else:
+                        documents.append(
+                            document
+                        )
         random.shuffle(documents)
-        portion = int(len(documents) * test_perc)
-        train_split = documents[:portion]
-        test_split = documents[portion:]
-        train_labels = labels[:portion]
-        test_labels = labels[portion:]
-        return cls(examples = train_split, test_split = test_split, labels = train_labels, test_labels = test_labels)
+        return cls(documents, cat_to_label)
 
 
+if __name__ == "__main__":
+    url = "https://ja.wikipedia.org/w/api.php?"
+    lang = "ja"
+    extractor = WikipediaExtractor(
+        url = url,
+        lang = lang
+    )
+    print("Searching page ids...")
+    ids = extractor.extract_ids_from_categories(CATEGORIES, max_pages=500)
+    print("Done.")
+    print()
+    print("Building dataset.")
+    files = list(utils.search_files("../data/wikipedia-dump/japanese/extracted/"))
+    dataset = WikipediaDataset.from_collection(files, page_ids=ids, max_n_docs=None, max_n_tokens=64)
+    print(f"Dataset size: {len(dataset)}")
+
+    cross_val = CrossValidationDataset.create_folds(dataset, 7)
+
+    print(f"Train splits: {cross_val.train_splits}")
+    print(f"Test splits: {cross_val.test_splits}")

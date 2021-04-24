@@ -126,9 +126,10 @@ class WikipediaExtractor:
         ids_to_cat = {}
         for cat in categories:
             ids = self.extract_ids_from_category(cat, max_pages=max_pages)
+            print(f"Category {cat} number of pages: {len(ids)}")
             for id in ids:
                 ids_to_cat[id] = cat
-            time.sleep(0.5)
+            time.sleep(1)
         return ids_to_cat
         
 if __name__ == "__main__":

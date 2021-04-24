@@ -34,6 +34,7 @@ class Configuration:
     device: torch.device = torch.device("cuda")
     warmup_steps: int = 0
     fp16: bool = True
+    model_path: str = None
 
 
 @dataclass

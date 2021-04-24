@@ -7,6 +7,7 @@ import argparse
 import torch
 import transformers
 from sentence_transformers import SentenceTransformer
+from src.utils.utils import load_file
 
 def compare_models(queries: List[str], teacher_results: dict, student_results: dict):
     accuracy = 0
@@ -49,53 +50,42 @@ if __name__ == "__main__":
 
     random.seed(43)
 
-    model_config = config.ModelParameters(
-        model_name = "eval_sentence_mining"
+    model = "../training/trained_models/sencoder-distilbert-multi-quora/"
+
+    model_config = ModelParameters(
+        model_name = "eval_sentence_mining",
+        hidden_size=768
     )
 
-    configuration_teacher = config.Configuration(
+    configuration = Configuration(
         model_parameters=model_config,
-        model = args.teacher_model,
+        model = model,
         save_path = "./results",
         batch_size = 16,
-        device = torch.device(args.device),
-        tokenizer = transformers.AutoTokenizer.from_pretrained(args.teacher_model, use_fast=True)
+        device = torch.device("cuda"),
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model, use_fast=True),
+        model_path = "../compression/output/onnx/sencoder-distilbert-multi-quora-optim/model-opt.onnx"
     )
-    """
-    configuration_student = config.Configuration(
-        model_parameters=model_config,
-        model = args.student_model,
-        save_path = "./results",
-        batch_size = 16,
-        device = torch.device(args.device),
-        tokenizer = transformers.AutoTokenizer.from_pretrained(args.student_model, use_fast=True)
-    )
-    """
-  
-    teacher_model = SentenceTransformerWrapper.load_pretrained(args.teacher_model, params=configuration_teacher)
-    #student_model = SentenceTransformerWrapper.load_pretrained(args.student_model, params=configuration_student)
+    
 
+    encoder_model = SentenceTransformerWrapper.load_pretrained(model, params=configuration)
+    #encoder_model.save_pretrained("../training/trained_models/sencoder-distilbert-multi-quora")
 
-    num_queries = args.num_queries
-
-    corpus_percent = args.corpus_percentage
-
-    document_dataset = config.load_file("../dataset/cached/jp-wikipedia-dataset")
-    #document_dataset = DocumentCorpusDataset.from_tsv('../data/wiki-ja/ja.wikipedia_250k.txt')
-
-    #TODO implement in dataloader
+    num_queries = 1
+    corpus_percent = 0.001
+    document_dataset = load_file("../dataset/cached/jp-wikipedia-dataset")
     all_sentences = list(document_dataset.sentences)
     random.shuffle(all_sentences)
-
     corpus_portion = all_sentences[:int(len(all_sentences)*corpus_percent)]
-    print(f"Sentences present in the corpus: {len(corpus_portion)}")
 
     pipeline = APISearchPipeline(
         name="semantic_search", 
-        embed_size=768,
+        params=configuration,
         index_path="./index",
         corpus=corpus_portion, 
-        model=teacher_model)
+        model=encoder_model,
+        inference_mode=True,
+        max_n_results=5)
 
     while True:
         query = str(input("Enter a sentence to search"))

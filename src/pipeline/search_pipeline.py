@@ -1,11 +1,13 @@
 import os
-from src.models.sentence_encoder import SentenceTransformerWrapper, SiameseSentenceEmbedder
+from src.models.sentence_encoder import SentenceTransformerWrapper
 from typing import Dict, List, Union
 import torch
 from torch import nn
 import torch.nn.functional as F
 import time
 import hnswlib
+import onnxruntime
+import numpy as np
 
 class Pipeline:
     def __init__(self, name):
@@ -163,10 +165,25 @@ class SemanticSearchPipeline(SearchPipeline):
 
 
 class APISearchPipeline(SemanticSearchPipeline):
-    def __init__(self, embed_size, *args, **kwargs):
+    def __init__(
+        self, 
+        params,
+        max_n_results: int, 
+        *args, 
+        inference_mode: bool=False, 
+        session_options:bool=None,
+        **kwargs):
         super().__init__(*args, **kwargs)
+        self.params = params
+        self.inference_mode = inference_mode
+        self.sess_options = session_options
+        self.max_n_results = max_n_results
+        if self.inference_mode:
+            if self.sess_options is None:
+                self.sess_options = onnxruntime.SessionOptions()
+            self.session = onnxruntime.InferenceSession(self.params.model_path, self.sess_options)
         # load index
-        self.index = hnswlib.Index(space = 'cosine', dim = embed_size)
+        self.index = hnswlib.Index(space = 'cosine', dim = self.params.model_parameters.hidden_size)
         index_load_path = os.path.join(self.index_path, "index.bin")
         if not os.path.exists(index_load_path):
             os.makedirs(self.index_path, exist_ok=True)
@@ -184,14 +201,48 @@ class APISearchPipeline(SemanticSearchPipeline):
             assert os.path.exists(self.index_path)
             self.index.load_index(index_load_path)
 
-    def _search(self, text: Union[str, List[str]], max_num_results: int, return_embeddings=False):
+    def __call__(
+        self,
+        queries: Union[List[str], torch.Tensor], 
+        max_num_results: int, 
+        return_embeddings: bool=False):
+        if self.inference_mode:
+            return self._predict(queries)
+        return self._search(queries, max_num_results, return_embeddings)
+
+    def add_elements(self, text: Union[str, List[str]]):
+        embeddings = self.model.encode_text(text, output_np=True)
+        data_labels = np.arange(len(embeddings))
+        self.index.add_items(embeddings, data_labels, num_threads = -1)
+
+    def _predict(self, input: str):
+        tokenized_dict = self.params.tokenizer(
+            text=input,
+            add_special_tokens=True,
+            padding='longest',
+            truncation=True,
+            max_length=self.params.sequence_max_len,
+            return_attention_mask=True,
+            return_token_type_ids=True,
+            return_tensors='np'
+        )
+        inputs = {
+            'input_ids':  tokenized_dict["input_ids"].reshape(1, -1),
+            'attention_mask': tokenized_dict["attention_mask"].reshape(1, -1),
+        }
+
+        output = self.session.run(None, inputs)
+        query_embeddings = output[0]
+        return self._search(text=input, query_embeddings=query_embeddings)
+
+    def _search(self, text: Union[str, List[str]], query_embeddings = None):
         if isinstance(text, str):
             text = [text]
-        # encode query(ies)
-        query_embeddings = self.model.encode_text(text, output_np=True)
-        assert max_num_results < self.ef
+        if query_embeddings is None:
+            query_embeddings = self.model.encode_text(text, output_np=True)
+        assert self.max_n_results < self.ef
         self.index.set_ef(self.ef)
-        hits_ids, distances = self.index.knn_query(query_embeddings, k=max_num_results)
+        hits_ids, distances = self.index.knn_query(query_embeddings, k=self.max_n_results)
         # search in index
         results = [(id, 1-score) for id, score in zip(hits_ids[0], distances[0])]
         results = sorted(results, key = lambda x: x[1], reverse=True)
@@ -199,6 +250,7 @@ class APISearchPipeline(SemanticSearchPipeline):
         for hit_idx, _ in results:
             candidate_texts.append(self.corpus[hit_idx])
         # return results
-        assert candidate_texts
         return candidate_texts
+
+    
 

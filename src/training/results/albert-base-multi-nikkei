@@ -1,0 +1,14 @@
+ ------- Running training for model: albert-base-multi-nikkei -------- 
+
+Params: batch size: 16; number of epochs: 4; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 768; lr: 2e-05; merge strategy: None
+validation > epoch: 1; loss: 0.65244142623084; accuracy: 0.7558543281653747; 
+training > epoch: 1; loss: 0.8961047763367804; accuracy: 0.6775084576349377; 
+validation > epoch: 2; loss: 0.6017697399352179; accuracy: 0.7720849483204134; 
+training > epoch: 2; loss: 0.5980678513006531; accuracy: 0.7771989850838075; 
+validation > epoch: 3; loss: 0.5995711530486569; accuracy: 0.7784237726098192; 
+training > epoch: 3; loss: 0.4965730191609422; accuracy: 0.8121828386898354; 
+validation > epoch: 4; loss: 0.6011359122520413; accuracy: 0.7825419896640827; 
+training > epoch: 4; loss: 0.4266105974745707; accuracy: 0.8333211594648624; 
+
+

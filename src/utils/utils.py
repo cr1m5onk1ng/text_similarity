@@ -9,7 +9,14 @@ import os
 import torch
 from torch.nn import functional as F
 from src.configurations import config as config
+import nltk
 
+
+def flat_map(f, xs):
+    ys = []
+    for x in xs:
+        ys.extend(f(x))
+    return ys
 
 def load_file(path):
     file_name = open(path, 'rb')
@@ -58,7 +65,6 @@ def remove_unnecessary_spaces(out_string):
     return out_string
 
 def remove_html_tags(text):
-    """Remove html tags from a string"""
     import re
     clean = re.compile('<.*?>')
     return re.sub(clean, '', text)

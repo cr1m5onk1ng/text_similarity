@@ -21,6 +21,17 @@ from googletrans import Translator
 from bertopic import BERTopic
 from sklearn.datasets import fetch_20newsgroups
 from itertools import combinations
+import random
+
+
+def print_top_words_per_topic(top_words, top_topics):
+        for topic_num in top_words:
+            if topic_num != -1 and topic_num in top_topics:
+                print(f"Most common words for topic: {topic_num}")
+                word_and_score_list = top_words[topic_num]
+                for w, _ in word_and_score_list:
+                        print(f"\t{w}")   
+                print()
 
 
 class TopicModelingParams:
@@ -106,12 +117,14 @@ class TopicModelingPipeline(Pipeline):
         tf_idf = np.multiply(tf, idf)
         return tf_idf, count
 
-    def _find_wn_least_common_hypernyms(self, synsets):
+    def _find_wn_least_common_hypernyms(self, synset_pairs: List[Tuple], return_depth=False):
         ancestors = set()
-        synset_pairs = list(combinations(synsets, 2))
+        ancestors_dict = {}
         for syn1, syn2 in synset_pairs:
+            if return_depth:
+                ancestors_dict.update(syn1._shortest_hypernym_paths(syn2))
             ancestors.update(syn1.lowest_common_hypernyms(syn2))
-        return ancestors
+        return ancestors if not return_depth else ancestors_dict
 
     def reduce_n_topics(self, tf_idf: np.array, docs_df, n: int=10):
         for i in range(n):
@@ -163,10 +176,18 @@ class TopicModelingPipeline(Pipeline):
                 for w, _ in word_and_score_list:
                     syns = wn.synsets(w, lang=self.lang, pos="n")
                     synsets += syns
-                common_hypernyms = self._find_wn_least_common_hypernyms(synsets)
-                print(f"Topic {topic} most common hypernyms:")
+                synsets_pairs = combinations(synsets, 2)
+                common_hypernyms = self._find_wn_least_common_hypernyms(synsets_pairs)
                 for hyp in common_hypernyms:
                     print(f"\t{hyp}")
+                """
+                hyp_pairs = combinations(common_hypernyms, 2)
+                hyps_with_depths = self._find_wn_least_common_hypernyms(hyp_pairs, return_depth=True)
+                print(f"Topic {topic} most common hypernyms:")
+                
+                for hyp in hyps_with_depths:
+                    print(f"\t{hyp} with depth: {hyps_with_depths[hyp]}")
+                """
                     
     def print_top_words_per_topic(self, top_words, top_topics, translate=False):
         for topic_num in top_words:
@@ -205,6 +226,8 @@ if __name__ == "__main__":
 
     model = "sentence-transformers/quora-distilbert-multilingual"
 
+    """
+
     model_config = config.ModelParameters(
         model_name = "eval_sentence_mining"
     )
@@ -220,18 +243,17 @@ if __name__ == "__main__":
     )
 
     encoder = SentenceTransformerWrapper.load_pretrained(model, params=model_config)
-
+    
     #document_dataset = DocumentCorpusDataset.from_tsv("../data/wiki-ja/ja.wikipedia_250k.txt")
     #document_dataset = LivedoorDataset.from_collection("../data/livedoor/text/").paragraphs
 
-    perc = 0.3
+    perc = 0.25
 
     #articles = document_dataset[0:int(len(document_dataset) * perc)]
     #articles = document_dataset.articles[0:int(len(document_dataset) * perc)]
     dataset = fetch_20newsgroups(subset='all')['data']
+    random.shuffle(dataset)
     articles = dataset[0:int(len(dataset) * perc)]
-    
-    print(f"Articles sample: {articles[:2]}")
 
     params = TopicModelingParams(min_cluster_size = 15)
 
@@ -253,10 +275,11 @@ if __name__ == "__main__":
     print("\n\n")
     print(f"Common Hypernyms")
     pipeline.find_general_categories(top_n_words, top_topics)
-    
+    """
+    dataset = fetch_20newsgroups(subset='all')['data']
+    topic_model = BERTopic(embedding_model=model, nr_topics=10)
+    topics, _ = topic_model.fit_transform(dataset)
+    top_topics = topic_model.get_topic_freq().head(10).Topic
+    print_top_words_per_topic(topic_model.get_topics(), top_topics)
 
-    """
-    topic_model = BERTopic(embedding_model=model)
-    topics, _ = topic_model.fit_transform(articles)
-    """
     #utils.save_file(top_n_words, "./results", "japanese_wiki_topics.bin")
