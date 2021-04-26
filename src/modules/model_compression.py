@@ -4,6 +4,7 @@ from pathlib import Path
 from src.modules.replacement_scheduler import LinearReplacementScheduler
 from src.training.train import Trainer
 from src.models.modeling import BaseEncoderModel
+from src.utils.utils import count_model_parameters
 from typing import Dict, List, Optional, Any
 import numpy as np
 from src.configurations.config import Configuration
@@ -673,11 +674,10 @@ def convert_to_onnx(
 
 
 class PruningStrategy():
-    def __init__(self, params, model, dataloader, pruning_function):
+    def __init__(self, params, model, dataloader):
         self.params = params
         self.model = model
         self.dataloader = dataloader
-        self.pruning_function = pruning_function
 
 
 class FastFormersPruningStrategy(PruningStrategy):
@@ -685,14 +685,13 @@ class FastFormersPruningStrategy(PruningStrategy):
         super().__init__(*args, **kwargs)
 
     def __call__(self):
-        return prune_rewire(self.params, self.model, self.dataloader, self.params.tokenizer, self.params.is_distilbert)
+        is_distilbert = "distilbert" in self.params.model
+        return prune_rewire(self.params, self.model, self.dataloader, self.params.tokenizer, is_distilbert)
 
 
 class DistillationStrategy(Learner):
-    def __init__(self, teacher: nn.Module, train_dataloader, *args, evaluator=None, **kwargs):
+    def __init__(self, *args, evaluator=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.teacher = teacher
-        self.train_dataloader = train_dataloader
         self.evaluator = evaluator
 
     def _distillation_step(self, save_every_n=None):
@@ -740,6 +739,8 @@ class DistillationStrategy(Learner):
 class TheseusCompressionDistillation(DistillationStrategy):
     def __init__(
         self, 
+        train_dataloader,
+        valid_dataloader,
         *args, 
         replacing_rate_scheduler=None,
         succ_n_layers: int=6,
@@ -747,41 +748,72 @@ class TheseusCompressionDistillation(DistillationStrategy):
         replacing_rate = 0.3,
          **kwargs):
         super().__init__(*args, **kwargs)
-        self.predecessor = self.model
+        self.train_dataloader = train_dataloader
+        self.valid_dataloader = valid_dataloader
         self.succ_n_layers = succ_n_layers
-        scc_n_layer = self.predecessor.bert.encoder.scc_n_layer
-        self.replacing_rate_scheduler = replacing_rate_scheduler
+        
         if "distilbert" in self.params.model:
+            self.model.distilbert.transformer.scc_n_layer = self.succ_n_layers
+            self.model.distilbert.transformer.scc_layer = nn.ModuleList([deepcopy(self.model.distilbert.transformer.layer[ix]) for ix in range(self.succ_n_layers)])
             bert_encoder = self.model.distilbert.transformer
         else:
+            self.model.bert.encoder.scc_n_layer = self.succ_n_layers
+            self.model.bert.encoder.scc_layer = nn.ModuleList([deepcopy(self.model.bert.encoder.layer[ix]) for ix in range(self.succ_n_layers)])
             bert_encoder = self.model.bert.encoder
-        if replacing_rate_scheduler is None:
+        
+        self.replacing_rate_scheduler = replacing_rate_scheduler
+        if self.replacing_rate_scheduler is None:
             self.replacing_rate_scheduler = LinearReplacementScheduler(bert_encoder=bert_encoder,
                                                               base_replacing_rate=replacing_rate,
                                                               k=scheduler_linear_k)
-        self.predecessor.bert.encoder.scc_layer = nn.ModuleList([deepcopy(self.predecessor.bert.encoder.layer[ix]) for ix in range(scc_n_layer)])
 
-    def __call__(self):
-        if "distilbert" in self.params.model:
-            self.model.distilbert.transformer.scc_n_layer = self.scc_n_layer
-            scc_n_layer = self.model.distilbert.transformer.scc_n_layer
-            self.model.distilbert.transformer.scc_layer = nn.ModuleList([deepcopy(self.model.distilbert.transformer.layer[ix]) for ix in range(scc_n_layer)])
+    def __call__(self) -> nn.Module:
+        params_before = 0 
+        if isinstance(self.model, BaseEncoderModel):
+            params_before = count_model_parameters(self.model.context_embedder)
         else:
-            self.model.bert.encoder.scc_n_layer = self.scc_n_layer
-            scc_n_layer = self.model.bert.encoder.scc_n_layer
-            self.model.bert.encoder.scc_layer = nn.ModuleList([deepcopy(self.model.bert.encoder.layer[ix]) for ix in range(scc_n_layer)])
+            params_before = count_model_parameters(self.model)
 
         trainer = Trainer(
-            self.params.config_name, 
-            train_dataloader=self.train_data_loader, 
-            valid_dataloader=None, 
+            self.config_name, 
+            train_dataloader=self.train_dataloader, 
+            valid_dataloader=self.valid_dataloader, 
             epochs=self.params.epochs, 
             configuration=self, 
             direction="maximize", 
             measure="accuracy",
-            eval_in_train=True
+            eval_in_train=self.valid_dataloader is not None,
+            save_model=False,
+            return_model=True
         )
-        trainer.train()
+        model = trainer.execute(write_results=False)
+        params_after = 0
+        if isinstance(self.model, BaseEncoderModel):
+            if "distilbert" in self.params.model:
+                model.context_embedder.config.n_layers = self.succ_n_layers
+                model.context_embedder.distilbert.transformer.layer = None#deepcopy(self.model.context_embedder.distilbert.transformer.scc_layer)
+                #model.context_embedder.distilbert.transformer.scc_layer = None  
+            else:
+                model.context_embedder.config.num_hidden_layers = self.succ_n_layers
+                model.context_embedder.bert.encoder.layer = deepcopy(self.model.context_embedder.bert.encoder.scc_layer)
+                model.context_embedder.bert.encoder.scc_layer = None
+            params_after = count_model_parameters(model.context_embedder)
+        else:
+            if "distilbert" in self.params.model:
+                model.config.n_layers = self.succ_n_layers
+                model.distilbert.transformer.layer = None#deepcopy(self.model.distilbert.transformer.scc_layer)
+                #model.distilbert.transformer.scc_layer = None
+            else:
+                model.config.num_hidden_layers = self.succ_n_layers
+                model.bert.encoder.layer = None#deepcopy(self.model.bert.encoder.scc_layer)
+                #model.bert.encoder.scc_layer = None
+            params_after = count_model_parameters(model)
+        print(f"Number of parameters before and after: Before: {params_before} After: {params_after}")
+        save_path = os.path.join(self.params.save_path, f"{self.config_name}-theseus-{self.succ_n_layers}layers")
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        model.save_pretrained(save_path)
+        return model
 
 
 class FastFormersDistiller(DistillationStrategy):
@@ -937,11 +969,15 @@ class SentenceEncoderDistiller(DistillationStrategy):
     """
     def __init__(
         self, 
-        layers,
+        teacher: nn.Module,
+        dataloader,
+        layers: list,
         *args,
         **kwargs
         ):
         super().__init__(*args, **kwargs)
+        self.teacher = teacher
+        self.dataloader = dataloader
         if isinstance(self.model, SentenceTransformerWrapper):
             model = self.model.context_embedder
         else:
@@ -993,7 +1029,7 @@ class SentenceEncoderDistiller(DistillationStrategy):
             meters = Metrics(*self.metrics["training"])
         else:
             meters = None
-        iterator = tqdm(self.train_dataloader, total=len(self.train_dataloader))
+        iterator = tqdm(self.dataloader, total=len(self.train_dataloader))
         self.model.to(self.params.device)
         self.teacher.to(self.params.device)
         self.teacher.eval()

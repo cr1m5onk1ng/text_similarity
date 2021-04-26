@@ -4,15 +4,12 @@ import torch
 from torch import nn
 from transformers import AutoConfig
 from src.configurations import config as config
-from .losses import *
-from src.modules.pooling import *
-from src.dataset.dataset import *
+from src.modules.modules import *
 from typing import Union, Dict, List
-from .modeling import BaseEncoderModel
+from src.models.modeling import BaseEncoderModel
 from transformers import AutoModel
 import transformers
 import numpy as np
-from tqdm import tqdm
 import os
 
 
@@ -30,7 +27,7 @@ class OnnxSentenceTransformerWrapper(BaseEncoderModel):
         return pooled
 
     @classmethod
-    def load_pretrained(cls, path, params=None):
+    def from_pretrained(cls, path, params=None):
         if params is None:
             params = torch.load(os.path.join(path, "model_config.bin"))
         config = transformers.AutoConfig.from_pretrained(path)
@@ -41,10 +38,7 @@ class OnnxSentenceTransformerWrapper(BaseEncoderModel):
         )
 
     def save_pretrained(self, path):
-        if not os.path.exists(path):
-            os.makedirs(path)
-        config_path = os.path.join(path, "model_config.bin")
-        torch.save(self.params, config_path)
+        super().save_pretrained(path)
         self.context_embedder.save_pretrained(path)
         self.context_embedder.config.save_pretrained(path)
         self.params.tokenizer.save_pretrained(path)
@@ -157,22 +151,38 @@ class SentenceTransformerWrapper(BaseEncoderModel):
     def get_sentence_embedding_dimension(self):
         return self.context_embedder.config.hidden_size
 
+    def save_pretrained(self, path):
+        super().save_pretrained(path)
+        save_dict = {}
+        if hasattr(self, "pooler"):
+            save_dict["pooler"] = self.pooler.state_dict()
+        if hasattr(self, "loss"):
+            save_dict["loss"] = self.loss.state_dict()
+        torch.save(save_dict, os.path.join(path, "modules.bin"))
+
     @classmethod
-    def load_pretrained(cls, path, merge_strategy=None, loss=None, params=None, parallel_mode=True):
+    def from_pretrained(cls, path, pooler=None, merge_strategy=None, loss=None, params=None, parallel_mode=True):
         if params is None:
             params = torch.load(os.path.join(path, "model_config.bin"))
         embedder_config = transformers.AutoConfig.from_pretrained(path)
         context_embedder = transformers.AutoModel.from_pretrained(path, config=embedder_config)
-        pooler = AvgPoolingStrategy()
+        checkpoint = torch.load(os.path.join(path, "modules.bin"))
+        pooler = AvgPoolingStrategy
+        if pooler is None:
+            pooler = AvgPoolingStrategy()
+            if "pooler" in checkpoint:
+                pooler.load_state_dict(checkpoint["pooler"])
+                
+        if loss is not None:
+            if "loss" in checkpoint:
+                loss.load_state_dict(checkpoint["loss"])
+        
         return cls(
             params=params,
             context_embedder=context_embedder,
-            merge_strategy=merge_strategy,
             pooler=pooler,
-            loss=loss,
-            parallel_mode=parallel_mode
+            loss=loss
         )
-
 
 class SiameseSentenceEmbedder(BaseEncoderModel):
     def __init__(

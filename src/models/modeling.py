@@ -1,7 +1,8 @@
 import torch
-from typing import Dict, Union
-from torch import nn 
+from typing import Dict, Optional, Union
+from torch import nn
 from src.configurations.config import Configuration
+from src.modules.modules import AvgPoolingStrategy, BertPoolingStrategy, SoftmaxLoss
 import transformers
 import os
 
@@ -14,15 +15,17 @@ class BaseEncoderModel(nn.Module):
         self,  
         params: Configuration,
         context_embedder: nn.Module,
+        input_dict: bool = False,
         normalize: bool = False
         ):
             super(BaseEncoderModel, self).__init__()
             self.params = params
             self.normalize = normalize
+            self.input_dict = input_dict
             self.context_embedder = context_embedder
             
     @classmethod
-    def load_pretrained(cls, path, params=None):
+    def from_pretrained(cls, path, params=None):
         if params is None:
             params = torch.load(os.path.join(path, "model_config.bin"))
         config = transformers.AutoConfig.from_pretrained(path)
@@ -55,6 +58,8 @@ class BaseEncoderModel(nn.Module):
             os.makedirs(path)
         self.context_embedder.save_pretrained(path)
         self.params.tokenizer.save_pretrained(path)
+        config_path = os.path.join(path, "model_config.bin")
+        torch.save(self.params, config_path)
 
     @property
     def config(self):
@@ -87,7 +92,7 @@ class TransformerWrapper(BaseEncoderModel):
         self.pooler = pooler
         self.loss = loss
 
-    def forward(self, features, return_output=False, head_mask=None):
+    def forward(self, features, return_output=False, head_mask=None, **kwargs):
         if isinstance(features, dict):
             input_features = features
         else:
@@ -104,12 +109,28 @@ class TransformerWrapper(BaseEncoderModel):
             return output, model_output
         return output
 
+    def save_pretrained(self, path: str):
+        super().save_pretrained(path)
+        save_dict = {}
+        if hasattr(self, "pooler"):
+            save_dict["pooler"] = self.pooler.state_dict()
+        if hasattr(self, "loss"):
+            save_dict["loss"] = self.loss.state_dict()
+        torch.save(save_dict, os.path.join(path, "modules.bin"))
+
+
     @classmethod
-    def load_pretrained(cls, path, pooler=None, loss=None, params=None):
+    def from_pretrained(cls, path, pooler=None, loss=None, params=None):
         if params is None:
             params = torch.load(os.path.join(path, "model_config.bin"))
         embedder_config = transformers.AutoConfig.from_pretrained(path)
-        print(f"Current model config: {embedder_config}")
+        checkpoint = torch.load(os.path.join(path, "modules.bin"))
+        if pooler is not None:
+            if "pooler" in checkpoint:
+                pooler.load_state_dict(checkpoint["pooler"])
+        if loss is not None:
+            if "loss" in checkpoint:
+                loss.load_state_dict(checkpoint["loss"])
         context_embedder = transformers.AutoModel.from_pretrained(path, config=embedder_config)
         return cls(
             params=params,
@@ -120,28 +141,50 @@ class TransformerWrapper(BaseEncoderModel):
 
 
 class OnnxTransformerWrapper(BaseEncoderModel):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        hidden_size = self.params.model_parameters.hidden_size
-        self.linear = nn.Linear(hidden_size, hidden_size)
-        self.activation = nn.Tanh()
+    def __init__(self, *args, pooler: nn.Module = None, output: nn.Module = None, **kwargs):
+        super().__init__(*args, input_dict=True, **kwargs)
+        self.pooler = pooler
+        self.output = output
+        if self.pooler is None:
+            self.pooler = BertPoolingStrategy(self.params)
+        if self.output is None:
+            self.output = nn.Linear(self.params.model_parameters.hidden_size, self.params.model_parameters.num_classes)
 
-    def forward(self, input_ids, attention_mask, token_type_ids=None):
-        if token_type_ids is not None:
-            model_output = self.context_embedder(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
-        else:
-            model_output = self.context_embedder(input_ids=input_ids, attention_mask=attention_mask)
-        return self.activation(self.linear(model_output[0]))
+    def forward(self, input_ids, attention_mask, **kwargs):
+        model_output = self.context_embedder(input_ids=input_ids, attention_mask=attention_mask)
+        pooled = self.pooler(model_output[0], None)
+        return self.output(pooled)
+
+    def save_pretrained(self, path: str):
+        super().save_pretrained(path)
+        torch.save(
+            {
+                "pooler": self.pooler.state_dict(),
+                "output": self.output.state_dict(),
+            }, 
+            os.path.join(path, "modules.bin")
+        )
 
     @classmethod
-    def load_pretrained(cls, path, pooler=None, loss=None, params=None):
+    def from_pretrained(cls, path: str, pooler: nn.Module=None, output: nn.Module=None, params: Configuration=None):
         if params is None:
             params = torch.load(os.path.join(path, "model_config.bin"))
+        checkpoint = torch.load(os.path.join(path, "modules.bin"))
+        if pooler is None:
+            pooler = BertPoolingStrategy(params)
+            if "pooler" in checkpoint:
+                pooler.load_state_dict(checkpoint["pooler"])
+        if output is None:
+            output = nn.Linear(params.model_parameters.hidden_size, params.model_parameters.num_classes)
+            if "output" in checkpoint:
+                output.load_state_dict(checkpoint["output"])
         embedder_config = transformers.AutoConfig.from_pretrained(path)
         context_embedder = transformers.AutoModel.from_pretrained(path, config=embedder_config)
         return cls(
             params=params,
             context_embedder=context_embedder,
+            pooler=pooler,
+            output=output
         )
             
         

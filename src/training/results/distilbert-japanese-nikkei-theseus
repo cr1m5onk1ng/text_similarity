@@ -1,0 +1,8 @@
+ ------- Running training for model: distilbert-japanese-nikkei-theseus -------- 
+
+Params: batch size: 16; number of epochs: 1; frozen weights: True; pretrained embeddings: False
+Model params: hidden size: 768; lr: 2e-05; merge strategy: None
+validation > epoch: 1; loss: 1.8240026023864746; accuracy: 0.4016; 
+training > epoch: 1; loss: 2.071096657371521; accuracy: 0.2824; 
+
+

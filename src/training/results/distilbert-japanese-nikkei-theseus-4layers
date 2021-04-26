@@ -1,0 +1,16 @@
+ ------- Running training for model: distilbert-japanese-nikkei-theseus-4layers -------- 
+
+Params: batch size: 16; number of epochs: 5; frozen weights: False; pretrained embeddings: False
+Model params: hidden size: 768; lr: 2e-05; merge strategy: None
+validation > epoch: 1; loss: 0.8775342387575841; accuracy: 0.6872599550708358; 
+training > epoch: 1; loss: 1.2179647288403146; accuracy: 0.5773029184983601; 
+validation > epoch: 2; loss: 0.8036213617770109; accuracy: 0.7109496720895685; 
+training > epoch: 2; loss: 0.8265318790016322; accuracy: 0.7061887254901961; 
+validation > epoch: 3; loss: 0.7907446313454641; accuracy: 0.7171319613029458; 
+training > epoch: 3; loss: 0.7274928444958264; accuracy: 0.7380340258879352; 
+validation > epoch: 4; loss: 0.7904093229526402; accuracy: 0.7152183955940432; 
+training > epoch: 4; loss: 0.669434555864415; accuracy: 0.756357502965599; 
+validation > epoch: 5; loss: 0.8017308373763996; accuracy: 0.7150417587593754; 
+training > epoch: 5; loss: 0.6299320044114317; accuracy: 0.7700101615379248; 
+
+

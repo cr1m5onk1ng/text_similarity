@@ -1,31 +1,16 @@
 import os
+from src.modules.modules import ClassifierOutput
+from src.models.sentence_encoder import SentenceTransformerWrapper
 from src.configurations.config import Configuration
 import torch
 from tqdm import tqdm
 from torch.cuda import amp
 from src.utils.metrics import AverageMeter, AccuracyMeter, Metrics
-from src.models.modeling import BaseEncoderModel
+from src.models.modeling import BaseEncoderModel, TransformerWrapper
 from transformers.optimization import AdamW
 from transformers import get_linear_schedule_with_warmup
 from typing import Union, Dict, List
-from dataclasses import dataclass
 import numpy as np
-
-@dataclass
-class ModelOutput:
-    loss: Union[torch.Tensor, np.array]
-
-
-@dataclass
-class ClassifierOutput(ModelOutput):
-    predictions: Union[torch.Tensor, np.array, None]
-    attention: Union[torch.Tensor, None] = None
-
-
-@dataclass
-class SimilarityOutput(ModelOutput):
-    embeddings: Union[torch.Tensor, np.array, None]
-    scores: Union[torch.Tensor, np.array, List[float], None]
 
 
 class Learner:
@@ -34,7 +19,7 @@ class Learner:
         params: Configuration,
         config_name: str,
         model: torch.nn.Module,
-        steps: int,
+        steps: int = 0,
         accumulation_steps: int = 1,
         warm_up_steps: int = 0,
         fp16: bool = True,
@@ -43,7 +28,6 @@ class Learner:
         use_mean_loss: bool = False,
         metrics: Union[Dict[str, List[AverageMeter]], None] = None,
         verbose: bool = True,
-        eval_in_train: bool = False,
         replacing_rate_scheduler = None,
     ):
         self.params = params
@@ -59,7 +43,6 @@ class Learner:
         self.metrics = metrics
         self.scaler = None
         self.verbose = verbose
-        self.eval_in_train = eval_in_train
         if self.use_tpu:
             self.fp16 = False
         if self.fp16:
@@ -120,7 +103,10 @@ class Learner:
 
     def step(self, data, b_idx):
         if isinstance(self.model, BaseEncoderModel):
-            model_output = self.model(data)
+            if self.model.input_dict:
+                model_output = self.model(**data.to_dict())
+            else:
+                model_output = self.model(data)
             loss = model_output.loss
             if hasattr(model_output, "predictions"):
                 logits = model_output.predictions
@@ -146,7 +132,10 @@ class Learner:
         logits = None
         with amp.autocast():
             if isinstance(self.model, BaseEncoderModel):
-                model_output = self.model(data)
+                if self.model.input_dict:
+                    model_output = self.model(**data.to_dict())
+                else:
+                    model_output = self.model(data)
                 loss = model_output.loss
                 if hasattr(model_output, "predictions"):
                     logits = model_output.predictions
@@ -276,10 +265,16 @@ class Learner:
                 if self.fp16:
                     with amp.autocast():
                         if isinstance(self.model, BaseEncoderModel):
-                            model_output = self.model(data)
-                            loss = model_output.loss
-                            if hasattr(model_output, "predictions"):
+                            if self.model.input_dict:
+                                model_output = self.model(**data.to_dict())
+                            else:
+                                model_output = self.model(data)
+                            if isinstance(model_output, ClassifierOutput):
+                                loss = model_output.loss
                                 logits = model_output.predictions
+                            else:
+                                logits = model_output
+                                loss = None
                         else:
                             if not isinstance(data, dict):
                                 features = data.to_dict()
@@ -292,10 +287,16 @@ class Learner:
                             logits = model_output[1]
                 else:
                     if isinstance(self.model, BaseEncoderModel):
-                        model_output = self.model(data)
-                        loss = model_output.loss
-                        if hasattr(model_output, "predictions"):
-                            logits = model_output.predictions
+                        if self.model.input_dict:
+                            model_output = self.model(**data.to_dict())
+                        else:
+                            model_output = self.model(data)
+                        if isinstance(model_output, ClassifierOutput):
+                                loss = model_output.loss
+                                logits = model_output.predictions
+                        else:
+                            logits = model_output
+                            loss = None
                     else:
                         if not isinstance(data, dict):
                             features = data.to_dict()
@@ -306,9 +307,8 @@ class Learner:
                         model_output = self.model(**features, labels=labels)
                         loss = model_output[0]
                         logits = model_output[1]
-                if self.use_mean_loss:
-                    loss = loss.mean()
-                losses.update(loss.item(), self.params.batch_size)
+                if loss is not None:
+                    losses.update(loss.item(), self.params.batch_size)
                 if meters is not None:
                     if isinstance(data, dict):
                         labels = data["labels"].cpu().numpy()
@@ -318,9 +318,10 @@ class Learner:
                         logits = logits.detach().cpu().numpy()
                         for m in meters.metrics:
                             m.update(logits, labels, n=self.params.batch_size)
-                    iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
-                else:
-                    iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
+                    postfix_dict = meters.set_postfix()
+                    if loss is not None:
+                        postfix_dict["loss"] = losses.avg
+                    iterator.set_postfix(**postfix_dict)
             iterator.close()
         if self.verbose and meters is not None:
             meters.display_metrics()

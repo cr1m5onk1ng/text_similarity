@@ -33,7 +33,9 @@ class Trainer:
         return_predictions: bool = False,
         convert_pred_to_numpy: bool = False,
         eval_in_train=False,
-        model_save_path: str = "trained_models"
+        model_save_path: str = "trained_models",
+        save_model: bool = True,
+        return_model: bool = False
         ):
       
         self.name = name
@@ -49,6 +51,8 @@ class Trainer:
         self.convert_pred_to_numpy = convert_pred_to_numpy
         self.eval_in_train=eval_in_train
         self.model_save_path = model_save_path
+        self.save_model = save_model
+        self.return_model = return_model
 
     def execute(self, write_results=False):
         messages = []
@@ -93,14 +97,16 @@ class Trainer:
                     if self.return_predictions:
                       results["labels"] = valid_res[f"labels_{self.measure}"]
                       results["predictions"] = valid_res[f"predictions_{self.measure}"]
-                    self.configuration.model.save_pretrained(os.path.join(self.model_save_path, self.configuration.config_name))
+                    if self.save_model:
+                        self.configuration.model.save_pretrained(os.path.join(self.model_save_path, self.configuration.config_name))
             elif self.direction == "maximize":
                 if optim_metric > best_metric:
                     best_metric = optim_metric
                     if self.return_predictions:
                       results["labels"] = valid_res[f"labels_{self.measure}"]
                       results["predictions"] = valid_res[f"predictions_{self.measure}"]
-                    self.configuration.model.save_pretrained(os.path.join(self.model_save_path, self.configuration.config_name))
+                    if self.save_model:
+                        self.configuration.model.save_pretrained(os.path.join(self.model_save_path, self.configuration.config_name))
             results["best_metric"] = best_metric
             
         messages.append("\n")
@@ -109,6 +115,8 @@ class Trainer:
             with open(os.path.join("results", self.name), "w+") as f:
                 for m in messages:
                     f.write(m+"\n")
+        if self.return_model:
+            return self.configuration.model
         return results
 
         

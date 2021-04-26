@@ -1,8 +1,8 @@
  ------- Running training for model: test -------- 
 
-Params: batch size: 16; number of epochs: 1; frozen weights: False; pretrained embeddings: False
+Params: batch size: 16; number of epochs: 1; frozen weights: True; pretrained embeddings: False
 Model params: hidden size: 768; lr: 2e-05; merge strategy: None
-validation > epoch: 1; loss: 1.2196840056118625; accuracy: 0.5778628754665024; 
-training > epoch: 1; loss: 0.9866661458516598; accuracy: 0.6537793943200055; 
+validation > epoch: 1; loss: 1.6465393133163453; accuracy: 0.4765; 
+training > epoch: 1; loss: 1.948536633682251; accuracy: 0.3242; 
 
 

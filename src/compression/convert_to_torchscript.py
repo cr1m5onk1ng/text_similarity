@@ -15,7 +15,7 @@ if __name__ == "__main__":
 
     parser.add_argument('--name', type=str, dest="config_name", required=True)
     parser.add_argument('--save_path', dest="save_path", type=str, default="output/pytorch_mobile")
-    parser.add_argument('--pretrained_path', dest="pretrained_path", type=str, default="../training/trained_models/distilbert-japanese-nikkei")
+    parser.add_argument('--pretrained_path', dest="pretrained_path", type=str, default="../training/trained_models/distilbert-japanese-nikkei-theseus-theseus-4layers")
 
     args = parser.parse_args()
 
@@ -44,7 +44,7 @@ if __name__ == "__main__":
     )
 
     
-    model = OnnxTransformerWrapper.load_pretrained(args.pretrained_path, params=configuration)
+    model = transformers.DistilBertForSequenceClassification.from_pretrained(args.pretrained_path)
     model.eval()
 
     input = "福岡市は公立小中学校などの教員採用で、筆記試験と面接を省く新たな採用方式を2022年から導入する"

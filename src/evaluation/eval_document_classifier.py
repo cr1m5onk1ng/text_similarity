@@ -1,4 +1,5 @@
 import argparse
+from transformers import DistilBertForSequenceClassification, DistilBertConfig
 from src.evaluation.evaluators import ClassificationEvaluator
 from src.dataset.dataset import SmartParaphraseDataloader
 from src.models.modeling import TransformerWrapper
@@ -26,7 +27,7 @@ if __name__ == "__main__":
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
     parser.add_argument('--model', type=str, dest="model", default="distilbert-base-multilingual-cased")
-    parser.add_argument('--pretrained_model', type=str, dest="pretrained_model", default="../compression/output/distilbert-base-multi-seq-enc-pruned_6_1536")
+    parser.add_argument('--pretrained_model', type=str, dest="pretrained_model", default="../training/trained_models/distilbert-japanese-nikkei-theseus-theseus-4layers")
     parser.add_argument('--pooling', type=str, dest="pooling_strategy", default="avg")
     parser.add_argument('--measure', type=str, dest="measure", default="loss")
     parser.add_argument('--direction', type=str, dest="direction", default="minimize")
@@ -75,13 +76,14 @@ if __name__ == "__main__":
         device = torch.device(args.device),
         tokenizer = transformers.AutoTokenizer.from_pretrained(args.model),
     )
-
+    """
     model = TransformerWrapper.load_pretrained(
             args.pretrained_model, 
             params=configuration,
             pooler = BertPoolingStrategy(configuration),
             loss = SoftmaxLoss(configuration))
-    
+    """
+    model = DistilBertForSequenceClassification.from_pretrained(args.pretrained_model, num_labels=len(LABELS_TO_ID))
 
     train_split, valid_split = dataset.split_dataset(test_perc=0.1)
     train_dataset = Dataset(train_split)

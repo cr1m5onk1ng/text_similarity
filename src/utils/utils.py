@@ -36,6 +36,9 @@ def search_files(root_dir):
             for name in files:
                 yield os.path.join(root, name)
 
+def count_model_parameters(model):
+    return sum(param.numel() for param in model.parameters() if param.requires_grad)
+
 def combine_tensors(tensors, strategy='avg'):
     assert strategy in ["avg", "sum"]
     assert isinstance(tensors, list)
