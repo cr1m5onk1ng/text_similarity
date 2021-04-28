@@ -1,27 +1,33 @@
 from typing import Optional
-from src import configurations
 from src.modules.model_compression import DistillationStrategy, PruningStrategy, TheseusCompressionDistillation, convert_to_onnx, convert_to_torchscript
-from src.models.bert_of_theseus import BertForSequenceClassification, BertConfig
 from src.models.distilbert_of_theseus import DistilBertForSequenceClassification, DistilBertConfig
-from src.modules.replacement_scheduler import LinearReplacementScheduler
 from src.dataset.dataset import SmartParaphraseDataloader
 from src.dataset.dataset import Dataset
 import os
 import random
 import argparse
 import torch
-from torch import nn
 import transformers
-from copy import deepcopy
 from src.utils import utils
-from src.configurations import config as config
+from src.configurations.config import Configuration, ModelParameters
 from collections import Counter
 from src.utils.metrics import AccuracyMeter
 
 class CompressionPipeline():
+    """
+    Pipeline that applies a series of compression algorithms
+    ranging from distillation to pruning and quantization.
+
+    :param params: Data class containing model parameters
+    :param distillation strategy: The distillation strategy to apply
+    :param pruning_strategy: The pruning strategy to apply
+    :param optimize_for_mobile: Whether or not to convert the model to an optimized format (torchscript, tflite)
+    :param convert_to_onnx: Whether or not to convert the model to Onnx format
+
+    """
     def __init__(
     self, 
-    params,
+    params: Configuration,
     distillation_strategy: Optional[DistillationStrategy] = None, 
     pruning_strategy: Optional[PruningStrategy] = None, 
     optimize_for_mobile: bool = False,
@@ -105,13 +111,13 @@ if __name__ == "__main__":
 
     metrics = {"training": [AccuracyMeter], "validation": [AccuracyMeter]}
 
-    model_config = config.ModelParameters(
+    model_config = ModelParameters(
         model_name = args.config_name,
         hidden_size = args.hidden_size,
         num_classes = len(LABELS_TO_ID),
     )
 
-    configuration = config.Configuration(
+    configuration = Configuration(
         model_parameters=model_config,
         model = args.model,
         save_path = args.save_path,
@@ -131,7 +137,7 @@ if __name__ == "__main__":
     model = DistilBertForSequenceClassification.from_pretrained(args.model, config=config)
    
     """
-    model = SentenceTransformerWrapper.load_pretrained(
+    model = SentenceTransformerWrapper.from_pretrained(
         path = args.model,
         params = configuration,
         merge_strategy = SentenceEncodingCombineStrategy(),
@@ -175,12 +181,12 @@ if __name__ == "__main__":
         metrics=metrics,
         succ_n_layers = args.scc_n_layer,
     )
-    distiller()
-    """
+
+    
     pipeline = CompressionPipeline(
         params = configuration,
         distillation_strategy=distiller
     )
 
     pipeline()
-    """
+    

@@ -250,9 +250,10 @@ class Pooler(nn.Module):
 
 
 class Loss(nn.Module):
-    def __init__(self, params: Configuration):
+    def __init__(self, params: Configuration, parallel_mode=False):
         super(Loss, self).__init__()
         self.params = params
+        self.parallel_mode = parallel_mode
 
     def forward(self, hidden_state: torch.Tensor, features: EmbeddingsFeatures) -> ModelOutput:
         raise NotImplementedError()
@@ -261,16 +262,14 @@ class Loss(nn.Module):
 class SoftmaxLoss(Loss):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.classifier = nn.Linear(self.params.model_parameters.hidden_size, self.params.model_parameters.num_classes)
-        if self.params.dropout_prob is not None:
-            self.dropout = nn.Dropout(self.params.dropout_prob)
+        input_dim = self.params.model_parameters.hidden_size if not self.parallel_mode else self.params.model_parameters.hidden_size * 3
+        output_dim = self.params.model_parameters.num_classes
+        self.classifier = nn.Linear(input_dim, output_dim)
         self.loss_function = nn.CrossEntropyLoss()
 
     def forward(self, hidden_state, features):
         labels = features.labels
         logits = self.classifier(hidden_state)
-        if hasattr(self, "dropout"):
-            logits = self.dropout(logits)
         loss = self.loss_function(
             logits.view(-1, self.params.model_parameters.num_classes), 
             labels.view(-1)

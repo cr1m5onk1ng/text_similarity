@@ -1,15 +1,28 @@
+"""
+The code in this file is based on the following papers and relative repositories:
+Fastformers: https://github.com/microsoft/fastformers
+Sentence-Transformers: https://www.sbert.net/
+BERT of Theseus: https://github.com/JetRunner/BERT-of-Theseus
+
+This module provides a collection of functions and classes for Transformer-based model compression.
+
+"""
 
 import os
 from pathlib import Path
 from src.modules.replacement_scheduler import LinearReplacementScheduler
 from src.training.train import Trainer
 from src.models.modeling import BaseEncoderModel
+from src.models.bert_of_theseus import BertConfig, BertForSequenceClassification, BertModel
+from src.models.distilbert_of_theseus import DistilBertConfig, DistilBertForSequenceClassification, DistilBertModel
+from src.modules.modules import SentenceEncodingCombineStrategy, SoftmaxLoss, BertPoolingStrategy
 from src.utils.utils import count_model_parameters
-from typing import Dict, List, Optional, Any
+from typing import Dict, Iterable, List, Optional, Any, Union
 import numpy as np
 from src.configurations.config import Configuration
 from src.utils.metrics import AccuracyMeter, AverageMeter, Metrics
-from ..models.sentence_encoder import SentenceTransformerWrapper
+from ..models.sentence_encoder import OnnxSentenceTransformerWrapper, SentenceTransformerWrapper
+from src.models.modeling import TransformerWrapper, OnnxTransformerWrapper
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -21,7 +34,7 @@ from sentence_transformers import models
 from sklearn.decomposition import PCA
 from onnxruntime.quantization import quantize_dynamic
 from torch.utils.mobile_optimizer import optimize_for_mobile
-import datetime
+import transformers
 from copy import deepcopy
 
 import logging
@@ -30,8 +43,199 @@ logging.basicConfig(format='%(asctime)s - %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S',
                     level=logging.INFO)
 
-def simple_accuracy(preds, labels):
-    return (preds == labels).mean()
+
+def distill_theseus(
+    args, 
+    configuration: Configuration, 
+    train_dataloader: Iterable, 
+    valid_dataloader: Iterable, 
+    num_labels: int, 
+    metrics: dict, 
+    use_wrapper: bool=False, 
+    sentence_level: bool=False, 
+    merging_strategy:nn.Module=None) -> nn.Module:
+    """
+    This function applies a module replacement distillation strategy desribed
+    in the paper BERT of Theseus, which stochastically replaces a group of layers
+    of the original model (predecessor) with a single layer of a so-called successor model.
+    The approach is simple but the results are incredibly good
+
+    :param configuration: The model configuration containing the model's parameters
+    :param train_dataloader: The training dataloader containing the training batches
+    :param valid_dataloader: The test dataloader containing the validation batches
+    :param dataset: The downstream task dataset to fine-tune the model to. For this distillation method, no additional data is needed
+    :param num_labels:  The number of labels of the task
+    :param metrics: The metics for training and validations
+    :param use_wrapper: Whether to use the library wrapper for transformers models or some huggingface model directly
+    :param sentence_lebel: Whether the task is a sentence-level task, thus requiring a Bi-Encoder transformer
+    :param merging_strategy: The merging-strategy required for sentence-level downstream task, in case a Bi-Encoder model is used
+
+    :returns The compressed model
+    """
+    
+    is_distilbert = "distilbert" in args.model
+
+
+    if is_distilbert:
+        config = DistilBertConfig.from_pretrained(args.model)
+        config.num_labels = num_labels
+        if use_wrapper:
+            if sentence_level:
+                model = SentenceTransformerWrapper(
+                    params=configuration,
+                    context_embedder = DistilBertModel.from_pretrained(args.model, config=config),
+                    pooler = BertPoolingStrategy(configuration),
+                    merge_strategy = SentenceEncodingCombineStrategy() if merging_strategy is None else merging_strategy,
+                    loss = SoftmaxLoss(configuration, parallel_mode=True)
+                )
+            else:
+                model = TransformerWrapper(
+                    params=configuration,
+                    context_embedder = DistilBertModel.from_pretrained(args.model, config=config),
+                    pooler = BertPoolingStrategy(configuration),
+                    loss = SoftmaxLoss(configuration)
+                )
+            model.context_embedder.transformer.scc_n_layer = args.scc_n_layer
+            scc_n_layer = model.context_embedder.transformer.scc_n_layer
+            model.context_embedder.transformer.scc_layer = nn.ModuleList([deepcopy(model.context_embedder.transformer.layer[ix]) for ix in range(scc_n_layer)])
+            bert_encoder = model.context_embedder.transformer
+        else:
+            model = DistilBertForSequenceClassification.from_pretrained(args.model, config=config)
+            model.distilbert.transformer.scc_n_layer = args.scc_n_layer
+            scc_n_layer = model.distilbert.transformer.scc_n_layer
+            model.distilbert.transformer.scc_layer = nn.ModuleList([deepcopy(model.distilbert.transformer.layer[ix]) for ix in range(scc_n_layer)])
+            bert_encoder = model.distilbert.transformer
+    else:
+        config = BertConfig.from_pretrained(args.model)
+        config.num_labels = num_labels
+        if use_wrapper:
+            if sentence_level:
+                model = SentenceTransformerWrapper(
+                    params=configuration,
+                    context_embedder = BertModel.from_pretrained(args.model, config=config),
+                    pooler = BertPoolingStrategy(configuration),
+                    merging_strategy = SentenceEncodingCombineStrategy() if merging_strategy is None else merging_strategy,
+                    loss = SoftmaxLoss(configuration, parallel_mode=True)
+                )
+
+            else:
+                model = TransformerWrapper(
+                    params=configuration,
+                    context_embedder = BertModel.from_pretrained(args.model, config = config),
+                    pooler = BertPoolingStrategy(configuration),
+                    loss = SoftmaxLoss(configuration)
+                )
+
+            model.context_embedder.encoder.scc_n_layer = args.scc_n_layer
+            scc_n_layer = model.context_embedder.encoder.scc_n_layer
+            model.context_embedder.encoder.scc_layer = nn.ModuleList([deepcopy(model.context_embedder.encoder.layer[ix]) for ix in range(scc_n_layer)])
+            bert_encoder = model.context_embedder.encoder
+        else:
+            model = BertForSequenceClassification.from_pretrained(args.model, config=config)
+            model.bert.encoder.scc_n_layer = args.scc_n_layer
+            scc_n_layer = model.bert.encoder.scc_n_layer
+            model.bert.encoder.scc_layer = nn.ModuleList([deepcopy(model.bert.encoder.layer[ix]) for ix in range(scc_n_layer)])
+            bert_encoder = model.bert.encoder
+
+
+    num_train_steps = len(train_dataloader) * args.epochs
+    num_warmup_steps = int(num_train_steps*0.1)
+
+    replacing_rate_scheduler = LinearReplacementScheduler(bert_encoder=bert_encoder,
+                                                              base_replacing_rate=args.replacing_rate,
+                                                              k=args.scheduler_linear_k)
+
+    params_before = count_model_parameters(model) if not use_wrapper else count_model_parameters(model.context_embedder)
+
+    learner = Learner(
+        params = configuration,
+        config_name=args.config_name, 
+        model=model, 
+        steps=num_train_steps, 
+        warm_up_steps=num_warmup_steps, 
+        fp16=args.mixed_precision, 
+        metrics=metrics,
+        replacing_rate_scheduler = replacing_rate_scheduler
+    )
+
+    trainer = Trainer(
+        args.config_name, 
+        train_dataloader=train_dataloader, 
+        valid_dataloader=valid_dataloader, 
+        epochs=args.epochs, 
+        configuration=learner, 
+        direction=args.direction, 
+        measure=args.measure,
+        eval_in_train=True,
+        save_model=False,
+        return_model=True
+    )
+
+    model = trainer.execute(write_results=True)
+    
+    if is_distilbert:
+        if use_wrapper:
+            model.context_embedder.config.n_layers = args.scc_n_layer
+            model.context_embedder.transformer.layer = deepcopy(model.context_embedder.transformer.scc_layer)
+            model.context_embedder.transformer.scc_layer = None
+        else:
+            model.config.n_layers = args.scc_n_layer
+            model.distilbert.transformer.layer = deepcopy(model.distilbert.transformer.scc_layer)
+            model.distilbert.transformer.scc_layer = None
+    else:
+        if use_wrapper:
+            model.context_embedder.config.num_hidden_layers = args.scc_n_layer
+            model.context_embedder.encoder.layer = deepcopy(model.context_embedder.encoder.scc_layer)
+            model.context_embedder.encoder.scc_layer = None
+        else:
+            model.config.num_hidden_layers = args.scc_n_layer
+            model.bert.encoder.layer = deepcopy(model.bert.encoder.scc_layer)
+            model.bert.encoder.scc_layer = None
+
+    params_after = count_model_parameters(model) if not use_wrapper else count_model_parameters(model.context_embedder)
+
+    print(f"Number of parameters before and after layers distillation: Before: {params_before} After: {params_after}")
+    print(f"Model config {model.config}")
+
+    if use_wrapper:
+        compressed_model = model.context_embedder
+        output = deepcopy(model.loss.classifier)
+        pooler = deepcopy(model.pooler)
+    else:
+        compressed_model = model
+        output = deepcopy(model.classifier)
+        if is_distilbert:
+            pooler = deepcopy(model.pre_classifier)
+        else:
+            pooler = deepcopy(model.bert.pooler.dense)
+
+    if is_distilbert:
+        new_context_embedder = transformers.DistilBertModel.from_pretrained(args.model, config=compressed_model.config, state_dict = compressed_model.state_dict())
+    else:
+        new_context_embedder = transformers.BertModel.from_pretrained(args.model, config=compressed_model.config, state_dict = compressed_model.state_dict())
+
+    if sentence_level:
+        new_transformer = SentenceTransformerWrapper(
+            params = configuration,
+            context_embedder = new_context_embedder,
+            pooler = pooler,
+            projection = model.projection
+        )
+
+    else:
+        new_transformer = OnnxTransformerWrapper(
+            params = configuration,
+            context_embedder = new_context_embedder,
+            pooler = pooler,
+            output = output
+        )
+
+    saved_params = count_model_parameters(new_context_embedder)
+    print(f"Saved model number of paramaters: {saved_params}")
+    save_path = os.path.join(args.save_path, f"{args.config_name}-theseus-{args.scc_n_layer}layers")
+    print(f"Saving model in {save_path}")
+    new_transformer.save_pretrained(save_path)
+    return new_transformer
 
 def print_2d_tensor(tensor):
     """ Print a 2D tensor """
@@ -79,7 +283,10 @@ def sort_by_importance(weight, bias, importance, num_instances, stride):
         i += 1
     return torch.cat(sorted_weight_to_concat), torch.cat(sorted_bias_to_concat) if sorted_bias_to_concat is not None else None
 
-def prune_rewire(args, model, eval_dataloader, tokenizer, is_distilbert=False):
+def prune_rewire(args, model: nn.Module, eval_dataloader: Iterable, tokenizer: transformers.AutoTokenizer, is_distilbert: bool=False):
+    """
+    This function is based on Fastformer's implementation of transformer model pruning
+    """
     results = {}
     model.to(args.device)
     if isinstance(model, BaseEncoderModel):
@@ -358,7 +565,16 @@ def prune_rewire(args, model, eval_dataloader, tokenizer, is_distilbert=False):
 
     return model
 
-def compute_heads_importance(args, model, eval_dataloader, head_mask=None, compute_importance=True, actually_pruned=False):
+def compute_heads_importance(
+    args, 
+    model: nn.Module, 
+    eval_dataloader: Iterable, 
+    head_mask: torch.Tensor=None, 
+    compute_importance:bool=True, 
+    actually_pruned:bool=False):
+    """
+    This function is based on Huggingface's implementation of Multi Head Attention pruning 
+    """
     accuracy = AccuracyMeter()
     n_layers, n_heads = model.config.num_hidden_layers, model.config.num_attention_heads
     head_importance = torch.zeros(n_layers, n_heads).to(args.device)
@@ -558,13 +774,16 @@ def quantize_model(path, save_path):
 def convert_to_onnx(
     model: nn.Module, 
     params: Configuration, 
-    opset=11, 
+    opset: int=11, 
     quantize: bool=False, 
     has_token_type_ids = False,
     input_names: Optional[List[str]] = None,
     output_names: Optional[List[str]]=None, 
     dynamic_axes: Optional[Dict[int, str]] = None,
     sample_string: Optional[str]=None) -> str:
+    """
+    This function is based on Fastformer's implementation of transformer model optimization via Onnx conversion
+    """
     
     print(f"################## Staring ONNX graph optimization on model: {params.model} ##################")
     if sample_string is None:
@@ -673,8 +892,15 @@ def convert_to_onnx(
     return quant_path if quantize else onnx_path
 
 
+"""
+The classes below are an attempt to organize the model compression pipeline
+"""
+
 class PruningStrategy():
-    def __init__(self, params, model, dataloader):
+    """
+    Base model for pruning strategies
+    """
+    def __init__(self, params: Configuration, model: nn.Module, dataloader: Iterable):
         self.params = params
         self.model = model
         self.dataloader = dataloader
@@ -690,6 +916,9 @@ class FastFormersPruningStrategy(PruningStrategy):
 
 
 class DistillationStrategy(Learner):
+    """
+    Base class for distillation strategies
+    """
     def __init__(self, *args, evaluator=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.evaluator = evaluator
@@ -737,6 +966,9 @@ class DistillationStrategy(Learner):
 
 
 class TheseusCompressionDistillation(DistillationStrategy):
+    """
+    Distillation strategy based on BERT of Theseus implementation.
+    """
     def __init__(
         self, 
         train_dataloader,
@@ -814,6 +1046,125 @@ class TheseusCompressionDistillation(DistillationStrategy):
             os.makedirs(save_path)
         model.save_pretrained(save_path)
         return model
+
+
+class SentenceEncoderDistiller(DistillationStrategy):
+    """
+    Distiller module based on SBERT implementation.
+    The distillation consists in a simple module dropping.
+    Some layers of the models are dropped while others are retained.
+    For 12-layers models, dropping 4 layers seems to lead to a very
+    slight decrease in performance for sentence-level similarity tasks
+    while cutting inference time by a consistent amount
+    """
+    def __init__(
+        self, 
+        teacher: nn.Module,
+        dataloader,
+        layers: list,
+        *args,
+        **kwargs
+        ):
+        super().__init__(*args, **kwargs)
+        self.teacher = teacher
+        self.dataloader = dataloader
+        if isinstance(self.model, SentenceTransformerWrapper):
+            model = self.model.context_embedder
+        else:
+            model = self.model
+        if layers is not None:
+            print(f"Number of parameters before layers removal: {self.model.params_num}")
+            if "distilbert" in self.params.model:
+                layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.transformer.layer) if i in layers])
+                model.transformer.layer = layers_to_keep
+                model.config.n_layers = len(layers_to_keep)
+                self.model.context_embedder = model
+            else:
+                layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
+                model.encoder.layer = layers_to_keep
+                model.config.num_hidden_layers = len(layers_to_keep)
+                self.model.context_embedder = model
+            print(f"Number of parameters after layers removal: {self.model.params_num}")
+            assert self.model.context_embedder.config.num_hidden_layers == len(layers)
+
+    def _step(self, data, b_idx):
+        output_student = self.model(data, parallel_mode=False)
+        loss = output_student.loss  
+        if self.accumulation_steps > 1:
+            loss = loss / self.accumulation_steps
+        loss.backward()
+        if self.max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        if (b_idx + 1) % self.accumulation_steps == 0:
+            self.optimizer.step()
+        return loss, output_student.predictions
+
+    def _mixed_precision_step(self, data, b_idx):
+        with amp.autocast():
+            output_student = self.model(data, parallel_mode=False)
+        loss = output_student.loss  
+        scale_before_step = self.scaler.get_scale()
+        self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.optimizer)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+  
+        return loss, output_student.predictions, scale_before_step
+
+    def _distillation_step(self, save_every_n=None):
+        logging.info(f"##### Making some fine liquor with model: {self.config_name}#####")
+        losses = AverageMeter("loss")
+        if self.metrics is not None:
+            meters = Metrics(*self.metrics["training"])
+        else:
+            meters = None
+        iterator = tqdm(self.dataloader, total=len(self.train_dataloader))
+        self.model.to(self.params.device)
+        self.teacher.to(self.params.device)
+        self.teacher.eval()
+        self.model.train()
+        results = []
+        skip_scheduler = False
+        for b_idx, data in enumerate(iterator):
+            data.to(self.params.device)
+            if self.fp16:
+                loss, embeddings, scale_before_step = self._mixed_precision_step(data, b_idx)
+                skip_scheduler = self.scaler.get_scale() != scale_before_step
+            else:
+               loss, embeddings = self._step(data, b_idx)
+
+            if (b_idx + 1) % self.accumulation_steps == 0:
+                self.optimizer.zero_grad()
+            
+            if self.scheduler is not None:
+                if not skip_scheduler:
+                    self.scheduler.step()
+        
+            losses.update(loss.item(), self.params.batch_size)
+            if meters is not None:
+                    labels = data.labels.cpu().numpy()
+                    if embeddings is not None:
+                        embeddings = embeddings.detach().cpu().numpy()
+                        for m in meters.metrics:
+                            m.update(embeddings, labels, n=self.params.batch_size)
+                    iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+            if meters is not None:
+                iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+            else:
+                iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
+            if save_every_n is not None:
+                if (b_idx+1) % save_every_n == 0:
+                    self.save_model(os.path.join(self.params.save_path, self.config_name))
+        iterator.close()
+        if self.verbose and meters is not None:
+            meters.display_metrics()
+        results = {"loss": losses.avg}
+        if meters is not None:
+            for m in meters.metrics:
+                results[m.get_name] = m.avg
+                m.reset()
+        return results
 
 
 class FastFormersDistiller(DistillationStrategy):
@@ -963,118 +1314,7 @@ class FastFormersDistiller(DistillationStrategy):
         return results
 
 
-class SentenceEncoderDistiller(DistillationStrategy):
-    """
-    Distiller module based on SBERT implementation
-    """
-    def __init__(
-        self, 
-        teacher: nn.Module,
-        dataloader,
-        layers: list,
-        *args,
-        **kwargs
-        ):
-        super().__init__(*args, **kwargs)
-        self.teacher = teacher
-        self.dataloader = dataloader
-        if isinstance(self.model, SentenceTransformerWrapper):
-            model = self.model.context_embedder
-        else:
-            model = self.model
-        if layers is not None:
-            print(f"Number of parameters before layers removal: {self.model.params_num}")
-            if "distilbert" in self.params.model:
-                layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.transformer.layer) if i in layers])
-                model.transformer.layer = layers_to_keep
-                model.config.n_layers = len(layers_to_keep)
-                self.model.context_embedder = model
-            else:
-                layers_to_keep = nn.ModuleList([l for i, l in enumerate(model.encoder.layer) if i in layers])
-                model.encoder.layer = layers_to_keep
-                model.config.num_hidden_layers = len(layers_to_keep)
-                self.model.context_embedder = model
-            print(f"Number of parameters after layers removal: {self.model.params_num}")
-            assert self.model.context_embedder.config.num_hidden_layers == len(layers)
 
-    def _step(self, data, b_idx):
-        output_student = self.model(data, parallel_mode=False)
-        loss = output_student.loss  
-        if self.accumulation_steps > 1:
-            loss = loss / self.accumulation_steps
-        loss.backward()
-        if self.max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-        if (b_idx + 1) % self.accumulation_steps == 0:
-            self.optimizer.step()
-        return loss, output_student.predictions
-
-    def _mixed_precision_step(self, data, b_idx):
-        with amp.autocast():
-            output_student = self.model(data, parallel_mode=False)
-        loss = output_student.loss  
-        scale_before_step = self.scaler.get_scale()
-        self.scaler.scale(loss).backward()
-        self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-  
-        return loss, output_student.predictions, scale_before_step
-
-    def _distillation_step(self, save_every_n=None):
-        logging.info(f"##### Making some fine liquor with model: {self.config_name}#####")
-        losses = AverageMeter("loss")
-        if self.metrics is not None:
-            meters = Metrics(*self.metrics["training"])
-        else:
-            meters = None
-        iterator = tqdm(self.dataloader, total=len(self.train_dataloader))
-        self.model.to(self.params.device)
-        self.teacher.to(self.params.device)
-        self.teacher.eval()
-        self.model.train()
-        results = []
-        skip_scheduler = False
-        for b_idx, data in enumerate(iterator):
-            data.to(self.params.device)
-            if self.fp16:
-                loss, embeddings, scale_before_step = self._mixed_precision_step(data, b_idx)
-                skip_scheduler = self.scaler.get_scale() != scale_before_step
-            else:
-               loss, embeddings = self._step(data, b_idx)
-
-            if (b_idx + 1) % self.accumulation_steps == 0:
-                self.optimizer.zero_grad()
-            
-            if self.scheduler is not None:
-                if not skip_scheduler:
-                    self.scheduler.step()
-        
-            losses.update(loss.item(), self.params.batch_size)
-            if meters is not None:
-                    labels = data.labels.cpu().numpy()
-                    if embeddings is not None:
-                        embeddings = embeddings.detach().cpu().numpy()
-                        for m in meters.metrics:
-                            m.update(embeddings, labels, n=self.params.batch_size)
-                    iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
-            if meters is not None:
-                iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
-            else:
-                iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
-            if save_every_n is not None:
-                if (b_idx+1) % save_every_n == 0:
-                    self.save_model(os.path.join(self.params.save_path, self.config_name))
-        iterator.close()
-        if self.verbose and meters is not None:
-            meters.display_metrics()
-        results = {"loss": losses.avg}
-        if meters is not None:
-            for m in meters.metrics:
-                results[m.get_name] = m.avg
-                m.reset()
-        return results
 
        
 

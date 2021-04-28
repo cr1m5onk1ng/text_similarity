@@ -1,18 +1,12 @@
 import transformers
 from transformers.models.auto.configuration_auto import AutoConfig
-from src.modules.pooling import BertPoolingStrategy
 from transformers import AutoModel, AutoModelForSequenceClassification
 from transformers import AutoTokenizer
 from src.dataset.wic_dataset import *
 from transformers import AutoTokenizer
 from src.models.modeling import BaseEncoderModel, TransformerWrapper
 from src.modules.model_compression import prune_huggingface, prune_rewire
-from src.models.losses import CosineSimilarityLoss, SoftmaxLoss
-from src.models.Transformer import Transformer
-from src.models.Pooling import Pooling
-from src.dataset.distillation_dataset import DistillationDataset
-from src.dataset.entailment_dataset import EntailmentDataset
-from src.models.SentenceTransformer import SentenceTransformer
+from src.modules.modules import *
 from src.utils.metrics import AccuracyMeter, AverageMeter, EmbeddingSimilarityMeter
 from src.dataset.sts_dataset import StsDataset
 from src.dataset.dataset import SmartParaphraseDataloader

@@ -386,19 +386,20 @@ class SmartParaphraseDataloader(DataLoader):
     @classmethod
     def build_batches(cls, dataset, batch_size, config, sentence_pairs=False, mode='standard', sbert_format=False):
         assert mode in ["sense_retrieval", "standard", "parallel", "tatoeba", "distillation", "word", "sequence"]
+        sentence_tasks_key = lambda x: max(len(x.get_sent1), len(x.get_sent2))
         if mode == "parallel":
-            key = lambda x: max(len(x.get_sent1.strip().split(" ")), len(x.get_sent2.strip().split(" ")))
+            key = sentence_tasks_key
             dataset = sorted(dataset, key=key)
             batches = SmartParaphraseDataloader.smart_batching_parallel(dataset, batch_size, config=config)
         if mode == "sense_retrieval":
-            key = lambda x: max(len(x[0].get_sent1.strip().split(" ")), len(x[0].get_sent2.strip().split(" ")))
+            key = sentence_tasks_key
             dataset = sorted(dataset, key=key)
             if sentence_pairs:
                 batches = SmartParaphraseDataloader.smart_batching_sense_sentence_pairs(dataset, batch_size)
             else:
                 batches = SmartParaphraseDataloader.smart_batching_sense(dataset, batch_size)
         if mode == "standard":
-            key = lambda x: max(len(x[0].get_sent1.strip().split(" ")), len(x[0].get_sent2.strip().split(" ")))
+            key = sentence_tasks_key
             dataset = sorted(dataset, key=key)
             batches = SmartParaphraseDataloader.smart_batching_standard(dataset, batch_size, config=config, sentence_pairs=sentence_pairs, sbert_format=sbert_format)
         if mode == "word":
@@ -417,28 +418,28 @@ class SmartParaphraseDataloader(DataLoader):
         return cls(batch_size, batches)
 
     @staticmethod
-    def build_indexes_combine(sent1, sent2):
-        encoded_sent_1 = config.TOKENIZER.encode(sent1)
-        encoded_sent_2 = config.TOKENIZER.encode(sent2)[1:]
+    def build_indexes_combine(config, sent1, sent2):
+        encoded_sent_1 = config.tokenizer.encode(sent1)
+        encoded_sent_2 = config.tokenizer.encode(sent2)[1:]
         encoded_pair = encoded_sent_1 + encoded_sent_2
         all_words = sent1.split(" ") + sent2.split(" ")
         encoded_words = []
         for w in all_words:
-            encoded = config.TOKENIZER.encode(w)[1:-1]
+            encoded = config.tokenizer.encode(w)[1:-1]
             encoded_words.append((w, encoded))
         return SmartParaphraseDataloader.find_tokens_positions(encoded_words, encoded_pair)
 
     @staticmethod
-    def build_indexes(sent1, sent2):
-        encoded_sent_1 = config.TOKENIZER.encode(sent1)
-        encoded_sent_2 = config.TOKENIZER.encode(sent2)[1:]
+    def build_indexes(config, sent1, sent2):
+        encoded_sent_1 = config.tokenizer.encode(sent1)
+        encoded_sent_2 = config.tokenizer.encode(sent2)[1:]
         words_1 = sent1.split(" ")
         words_2 = sent2.split(" ")
         encoded_words_1 = []
         encoded_words_2 = []
         for w1, w2 in zip(words_1, words_2):
-            encoded_1 = config.TOKENIZER.encode(w1)[1:-1]
-            encoded_2 = config.TOKENIZER.encode(w2)[1:-1]
+            encoded_1 = config.tokenizer.encode(w1)[1:-1]
+            encoded_2 = config.tokenizer.encode(w2)[1:-1]
             encoded_words_1.append((w1, encoded_1))
             encoded_words_2.append((w2, encoded_2))
         positions_1 = SmartParaphraseDataloader.find_tokens_positions(encoded_words_1, encoded_sent_1)
@@ -610,7 +611,7 @@ class SmartParaphraseDataloader(DataLoader):
             sentences_1 = []
             sentences_2 = []
             sent_pairs = []
-            for ex, label in batch:
+            for ex in batch:
                 if not sentence_pairs:
                     sent1 = ex.get_sent1
                     sent2 = ex.get_sent2
@@ -621,7 +622,7 @@ class SmartParaphraseDataloader(DataLoader):
                     sent2 = ex.get_sent2
                     sent_pairs.append([sent1, sent2])
 
-                b_labels.append(label)
+                b_labels.append(ex.label)
 
             del dataset[select:select+to_take]
 
@@ -635,7 +636,7 @@ class SmartParaphraseDataloader(DataLoader):
                     truncation=True,
                     max_length=config.sequence_max_len,
                     return_attention_mask=True,
-                    return_token_type_ids=True,
+                    return_token_type_ids=False,
                     return_tensors='pt'
                 )
 
@@ -646,28 +647,20 @@ class SmartParaphraseDataloader(DataLoader):
                     truncation=True,
                     max_length=config.sequence_max_len,
                     return_attention_mask=True,
-                    return_token_type_ids=True,
+                    return_token_type_ids=False,
                     return_tensors='pt'
                 )
 
                 sent_1_features = EmbeddingsFeatures.from_dict(encoded_dict_1)
                 sent_2_features = EmbeddingsFeatures.from_dict(encoded_dict_2)
 
-                if sbert_format:
-                    d = SiameseDataLoaderFeatures(
-                        sentence_1_features = encoded_dict_1,
-                        sentence_2_features = encoded_dict_2 ,
-                        labels = batch_labels,
-                        tokens_indexes=None,
-                    )
-                    
-                else:
-                    d = SiameseDataLoaderFeatures(
-                        sentence_1_features = sent_1_features,
-                        sentence_2_features = sent_2_features ,
-                        labels = batch_labels,
-                        tokens_indexes=None,
-                    )
+                
+                d = SiameseDataLoaderFeatures(
+                    sentence_1_features = sent_1_features,
+                    sentence_2_features = sent_2_features ,
+                    labels = batch_labels,
+                    tokens_indexes=None,
+                )
 
             else:
                 encoded_dict = config.tokenizer(

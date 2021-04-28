@@ -15,11 +15,23 @@ import os
 
 
 class OnnxSentenceTransformerWrapper(BaseEncoderModel):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    """
+    A wrapper around Huggingface pretrained model,following the SBERT Bi-Encoder architecutre, whose purpose is to be
+    optimized for inference. In this case, the forward function doesnt contain any branching and the pooler behaviour is
+    fixed to average pooling.
 
-    def forward(self, input_ids, attention_mask):
-        token_embeddings = self.context_embedder(input_ids=input_ids, attention_mask=attention_mask)[0]
+    :param projection_dim: The dimension of the projection matrix, applied in the case we want to reduce the size of the output embeddings 
+    """
+    def __init__(self, *args, projection: nn.Module=None,  **kwargs):
+        super().__init__(*args, **kwargs)
+        if projection is None:
+            self.projection = nn.Identity()
+        else:
+            self.projection = projection
+
+    def forward(self, input_ids, attention_mask, **kwargs):
+        token_embeddings = self.context_embedder(input_ids=input_ids, attention_mask=attention_mask, **kwargs)[0]
+        token_embeddings = self.projection(token_embeddings)
         input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
         sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
         sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
@@ -27,14 +39,26 @@ class OnnxSentenceTransformerWrapper(BaseEncoderModel):
         return pooled
 
     @classmethod
-    def from_pretrained(cls, path, params=None):
-        if params is None:
-            params = torch.load(os.path.join(path, "model_config.bin"))
+    def from_pretrained(cls, path, projection: nn.Module=None, params: Configuration=None):
+        config_path = os.path.join(path, "model_config.bin")
+        if not os.path.exists(config_path):
+            assert params is not None, "Parameters not found, need to pass model parameters for the model to work"
+        else:
+            params = torch.load(config_path)
         config = transformers.AutoConfig.from_pretrained(path)
         context_embedder = transformers.AutoModel.from_pretrained(path, config=config)
+        checkpoint_path = os.path.join(path, "modules.bin")
+        checkpoint = None
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path)
+        if projection is not None:
+            if checkpoint is not None:
+                if "projection" in checkpoint:
+                    projection.load_state_dict(checkpoint["projection"])
         return cls(
             params=params,
-            context_embedder=context_embedder
+            context_embedder=context_embedder,
+            projection=projection
         )
 
     def save_pretrained(self, path):
@@ -42,45 +66,51 @@ class OnnxSentenceTransformerWrapper(BaseEncoderModel):
         self.context_embedder.save_pretrained(path)
         self.context_embedder.config.save_pretrained(path)
         self.params.tokenizer.save_pretrained(path)
+        torch.save({"projection": self.projection.state_dict()}, os.path.join(path, "modules.bin"))
 
 
 class SentenceTransformerWrapper(BaseEncoderModel):
+    """
+    A wrapper around Huggingface pretrained model,following the SBERT Bi-Encoder architecutre
+    :param pooler: A pooler module that reduces the tokens dimension to a fixed sized, usually by taking the tokens dimension average
+    :param merge_strategy: A module that combines the output of the two sentences representations following a specific strategy
+    :param loss: A module that represents the loss applied during training for various downstream tasks
+    :param parallel_mode: Whether or not the model forward function is behaving like a bi-encoder or is outputting embeddings a (batch of) sentences
+    :param projection_dim: The dimension of the projection matrix, applied in the case we want to reduce the size of the outputted embeddings 
+    """
     def __init__(
         self, 
         pooler: PoolingStrategy, 
         merge_strategy: MergingStrategy, 
         loss: Loss, 
         *args, 
-        parallel_mode=True,
-        projection_dim=None, 
+        parallel_mode: bool=True,
+        projection: nn.Module=None, 
         **kwargs):
         super().__init__(*args, **kwargs)
         self.pooler = pooler
-        if merge_strategy is not None:
-            self.merge_strategy = merge_strategy
-        if loss is not None:
-            self.loss = loss
+        self.merge_strategy = merge_strategy
+        self.loss = loss
         self.parallel_mode = parallel_mode
-        hidden_size = self.context_embedder.config.hidden_size if not 'distilbert' in self.params.model else self.context_embedder.config.dim
-        if projection_dim is not None:
-            self.projection = nn.Linear(hidden_size, projection_dim, bias=False)
+        self.projection = projection
+        if self.projection is None:
+            self.projection = nn.Identity()
 
-    def forward(self, features, parallel_mode=True, return_output=False, head_mask=None):
+
+    def forward(self, features, return_output=False, head_mask=None):
         if self.parallel_mode:
             features_1 = features.sentence_1_features.to_dict()
             features_2 = features.sentence_2_features.to_dict()
             if head_mask is not None:
                 features_1['head_mask'] = head_mask
                 features_2['head_mask'] = head_mask
-            embed_features_1 = self.context_embedder(**features_1)[0]
-            embed_features_2 = self.context_embedder(**features_2)[0]
-            if hasattr(self, "projection"):
-                embed_1 = self.projection(self.pooler(embed_features_1, features.sentence_1_features))
-                embed_2 = self.projection(self.pooler(embed_features_2, features.sentence_2_features))
-            else:
-                embed_1 = self.pooler(embed_features_1, features.sentence_1_features)
-                embed_2 = self.pooler(embed_features_2, features.sentence_2_features)
-            merged = self.merge_strategy(features, embed_1, embed_2)
+            embed_1 = self.context_embedder(**features_1)[0]
+            embed_2 = self.context_embedder(**features_2)[0]
+            embed_1 = self.pooler(embed_1, features.sentence_1_features)
+            embed_2 = self.pooler(embed_2, features.sentence_2_features)
+            #merged = self.merge_strategy(features, embed_1, embed_2)
+            diff = torch.abs(embed_1 - embed_2)
+            merged = torch.cat((embed_1, embed_2, diff), dim=-1)
         else:
             input_features = features.to_dict()
             if head_mask is not None:
@@ -93,9 +123,9 @@ class SentenceTransformerWrapper(BaseEncoderModel):
                 pooled = self.pooler(model_output[0], features)
             merged = pooled
         if hasattr(self, "projection"):
-            merged = self.projection(pooled)
+            merged = self.projection(merged)
         output = self.loss(merged, features)
-        if not parallel_mode:
+        if not self.parallel_mode:
             if return_output:
                return output, model_output
         return output
@@ -162,147 +192,33 @@ class SentenceTransformerWrapper(BaseEncoderModel):
 
     @classmethod
     def from_pretrained(cls, path, pooler=None, merge_strategy=None, loss=None, params=None, parallel_mode=True):
-        if params is None:
-            params = torch.load(os.path.join(path, "model_config.bin"))
+        config_path = os.path.join(path, "model_config.bin")
+        if not os.path.exists(config_path):
+            assert params is not None, "Parameters not found, need to pass model parameters for the model to work"
+        else:
+            params = torch.load(config_path)
         embedder_config = transformers.AutoConfig.from_pretrained(path)
         context_embedder = transformers.AutoModel.from_pretrained(path, config=embedder_config)
-        checkpoint = torch.load(os.path.join(path, "modules.bin"))
-        pooler = AvgPoolingStrategy
+        checkpoint_path = os.path.join(path, "modules.bin")
+        checkpoint = None
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path)
         if pooler is None:
             pooler = AvgPoolingStrategy()
-            if "pooler" in checkpoint:
-                pooler.load_state_dict(checkpoint["pooler"])
+            if checkpoint is not None:
+                if "pooler" in checkpoint:
+                    pooler.load_state_dict(checkpoint["pooler"])
                 
         if loss is not None:
-            if "loss" in checkpoint:
-                loss.load_state_dict(checkpoint["loss"])
+            if checkpoint is not None:
+                if "loss" in checkpoint:
+                    loss.load_state_dict(checkpoint["loss"])
         
         return cls(
             params=params,
             context_embedder=context_embedder,
             pooler=pooler,
+            merge_strategy=merge_strategy,
             loss=loss
         )
 
-class SiameseSentenceEmbedder(BaseEncoderModel):
-    def __init__(
-        self, 
-        pooler: Pooler,
-        pooling_strategy: PoolingStrategy, 
-        *args,
-        merge_strategy: MergingStrategy=None,
-        loss: Loss=None,
-        **kwargs
-        ):
-        super().__init__(*args, **kwargs)
-        self.set_hidden_size()
-        if loss is not None:
-            self.loss = loss(self.params)
-        if merge_strategy is not None:
-            self.merge_strategy = merge_strategy()
-        if self.params.model_parameters.use_pretrained_embeddings:
-            self.pooling_strategy = SiameseSensePoolingStrategy(
-                return_combined=self.params.senses_as_features   
-            )
-        else:
-            self.pooling_strategy = pooling_strategy()
-
-        self.pooler = pooler(
-            pooling_strategy = self.pooling_strategy, 
-            normalize = self.normalize
-        )
-     
-    def forward(self, features: Union[DataLoaderFeatures, EmbeddingsFeatures], eval_mode=False, head_mask=None):
-        #weights are shared, so we call only one model for both sentences
-        if eval_mode:
-            embedding = self.context_embedder(**features.sentence_2_features.to_dict(), head_mask=head_mask)[0]
-            pooled = self.pooler(embedding, features.sentence_2_features, head_mask=head_mask)
-            merged = self.merge_strategy(features, pooled)
-        else:
-            embed_1 = self.context_embedder(
-                **features.sentence_1_features.to_dict(), head_mask=head_mask)[0]
-            embed_2 = self.context_embedder(
-                **features.sentence_2_features.to_dict(), head_mask=head_mask)[0]
-            pooled_1 = self.pooler(embed_1, features.sentence_1_features)
-            pooled_2 = self.pooler(embed_2, features.sentence_2_features)
-            merged = self.merge_strategy(features, pooled_1, pooled_2)
-
-        return self.loss(merged, features)
-
-    def encode(self, features: Union[DataLoaderFeatures, EmbeddingsFeatures], output_attention=False, head_mask=None, **kwargs) -> torch.Tensor:
-        output = self.context_embedder(input_ids=features.input_ids, attention_mask=features.attention_mask, output_attentions=output_attention, output_hidden_states=output_attention, head_mask=head_mask)
-        embed = output[0]
-        pooled = self.pooler(embed, features).to(self.params.device)
-        if output_attention:
-            return pooled, output
-        return pooled
-
-    def encode_text(self, documents: List[str], output_np: bool=False) -> Union[torch.Tensor, np.array]:
-        self.to(self.params.device)
-        documents = sorted(documents, key=lambda x: len(x))
-        encoded_documents = []
-        self.eval()
-        while len(documents) > 0:
-            to_take = min(self.params.batch_size, len(documents))
-            select = random.randint(0, len(documents)-to_take)
-            batch = documents[select:select+to_take]   
-            encoded_dict = self.params.tokenizer(
-                    text=batch,
-                    add_special_tokens=True,
-                    padding='longest',
-                    truncation=True,
-                    max_length=self.params.sequence_max_len,
-                    return_attention_mask=True,
-                    return_token_type_ids=True,
-                    return_tensors='pt'
-            )
-            input_ids = encoded_dict["input_ids"].to(self.params.device)
-            attention_mask = encoded_dict["attention_mask"].to(self.params.device)
-            features = EmbeddingsFeatures(
-                input_ids=input_ids, 
-                attention_mask=attention_mask, 
-            )
-            with torch.no_grad():
-                embeddings = self.encode(features)
-            embeddings = embeddings.detach()
-
-            if output_np:
-                embeddings = embeddings.cpu()
-
-            encoded_documents.extend(embeddings)
-
-            del documents[select:select+to_take] 
-        
-        if output_np:
-            encoded_documents = np.asarray([embedding.np() for embedding in encoded_documents])
-            return encoded_documents
-        return torch.stack(encoded_documents)
-
-    def set_hidden_size(self):
-        embedder_size = self.context_embedder.config.hidden_size
-        self.params.model_parameters.hidden_size = embedder_size*3
-
-    def load_pretrained(self, path):
-        config = AutoConfig.from_pretrained(path)
-        self.context_embedder = AutoModel.from_pretrained(path, config=config)
-
-    def save_model(self, path):
-        assert(path is not None)
-        if not os.path.exists(path):
-            os.makedirs(path, exist_ok=True)
-        d = {}
-        self.context_embedder.save_pretrained(path)
-
-    @classmethod
-    def from_pretrained(cls, path, params=None):
-        config = AutoConfig.from_pretrained(path)
-        context_embedder = AutoModel.from_pretrained(path, config=config)
-        if params is None:
-            params = torch.load(os.path.join(path, "training_params.bin"))
-        return cls(
-            params = params,
-            context_embedder=context_embedder,
-            pooling_strategy = AvgPoolingStrategy,
-            pooler = EmbeddingsPooler,
-        )
-      

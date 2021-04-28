@@ -1,3 +1,4 @@
+from src.dataset.dataset import DataLoaderFeatures
 import torch
 from typing import Dict, Optional, Union
 from torch import nn
@@ -87,12 +88,17 @@ class BaseEncoderModel(nn.Module):
 
 
 class TransformerWrapper(BaseEncoderModel):
-    def __init__(self, pooler, loss, *args, **kwargs):
+    """
+    A simple wrapper around Huggingface pretrained models.
+    :param pooler: A pooler module that reduces the tokens dimension to a fixed sized, usually by taking the CLS token representation
+    :param loss: A module that represents the loss applied during training for various downstream tasks
+    """
+    def __init__(self, pooler: nn.Module, loss: nn.Module, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pooler = pooler
         self.loss = loss
 
-    def forward(self, features, return_output=False, head_mask=None, **kwargs):
+    def forward(self, features: DataLoaderFeatures, return_output: bool=False, head_mask: torch.Tensor=None, **kwargs):
         if isinstance(features, dict):
             input_features = features
         else:
@@ -141,6 +147,12 @@ class TransformerWrapper(BaseEncoderModel):
 
 
 class OnnxTransformerWrapper(BaseEncoderModel):
+    """
+    A simple wrapper around Huggingface pretrained models whose purpose is to be optimized for inference. As such,
+    the forward function doesnt contain any branching.
+    :param pooler: A pooler module that reduces the tokens dimension to a fixed sized, usually by taking the CLS token representation
+    :param output: A module that represents the output layer applied during for a downstream tasks (usually a simple linear layer or MLP)
+    """
     def __init__(self, *args, pooler: nn.Module = None, output: nn.Module = None, **kwargs):
         super().__init__(*args, input_dict=True, **kwargs)
         self.pooler = pooler

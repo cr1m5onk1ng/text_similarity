@@ -1,4 +1,7 @@
 import argparse
+from src.models.sentence_encoder import SentenceTransformerWrapper
+from src.dataset.paws_dataset import PawsProcessor
+from src.modules.modules import SoftmaxLoss,  AvgPoolingStrategy, SentenceBertCombineStrategy
 from src.dataset.dataset import Dataset, SmartParaphraseDataloader
 from src.configurations.config import Configuration, ModelParameters
 from src.evaluation.evaluators import Evaluator
@@ -20,59 +23,39 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, dest="lr", default=2e-5)
     parser.add_argument('--dp', type=float, dest="dropout", default=0.1)
     parser.add_argument('--bs', type=int, dest="batch_size", default=16)
-    parser.add_argument('--save_path', dest="save_path", type=str, default="trained_models/")
-    parser.add_argument('--pretrained', dest="use_pretrained_embeddings", type=bool, default=False)
+    parser.add_argument('--train_path', dest="train_path", type=str, default="../data/paws-x/en/train.tsv")
+    parser.add_argument('--valid_path', dest="valid_path", type=str, default="../data/paws-x/en/dev_2k.tsv")
+    parser.add_argument('--save_path', dest="save_path", type=str, default="output/distillation")
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
     parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
-    parser.add_argument('--scc_n_layer', type=int, dest="scc_n_layer", default=3)
+    parser.add_argument('--scc_n_layer', type=int, dest="scc_n_layer", default=4)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
-    parser.add_argument('--model', type=str, dest="model", default="bandainamco-mirai/distilbert-base-japanese")
+    parser.add_argument('--model', type=str, dest="model", default="sentence-transformers/quora-distilbert-multilingual")
     parser.add_argument('--pooling', type=str, dest="pooling_strategy", default="avg")
     parser.add_argument('--measure', type=str, dest="measure", default="loss")
     parser.add_argument('--direction', type=str, dest="direction", default="minimize")
-    parser.add_argument("--scheduler_linear_k", dest="scheduler_linear_k", default=0.0006, type=float, help="Linear k for replacement scheduler.")
-    parser.add_argument("--replacing_rate", type=float, dest="replacing_rate", default=0.3,
+    parser.add_argument("--scheduler_linear_k", default=0.0006, type=float, help="Linear k for replacement scheduler.")
+    parser.add_argument("--replacing_rate", type=float, default=0.3,
                         help="Constant replacing rate. Also base replacing rate if using a scheduler.")
     parser.add_argument("--dev", type=bool, dest="dev", default=False)
+
     args = parser.parse_args()
 
     random.seed(43)
-    
-    categories = ["business", "culture", "economy", "politics", "society", "sports", "technology", "opinion", "local", "international"]
-    paths = [f"../data/articles/nikkei/nikkei_{cat}.json" for cat in categories]
-    # Since we are dealing mostly with small/medium sized sentences, we limit the number of tokens to 64
-    dataset = utils.load_file("../dataset/cached/nikkei_dataset")#DocumentDataset.from_json(paths, max_n_tokens=64)
-    utils.save_file(dataset, "../dataset/cached/", "nikkei_dataset")
-    print(f"Total number of documents: {len(dataset)}")
-    print()
-    label_to_cat = dataset.label_to_id
-    print(f"Mapping: {label_to_cat}")
-    print()
-    string_labels = list(map(lambda x: label_to_cat[x], dataset.labels))
-    print(f"Labels distribution: {Counter(string_labels)}")
-    print()
 
-    print(f"Dataset size: {len(dataset)}")
-    print()
-    LABELS_TO_ID = dataset.label_to_id
-    print(f"Labels mapping: {LABELS_TO_ID}")
-    print()
+    processor = PawsProcessor()
 
-    train_split, valid_split = dataset.split_dataset(test_perc=0.1)
-    if args.dev:
-        train_split = train_split[:10000]
-        valid_split = valid_split[:10000]
-    train_dataset = Dataset(train_split)
-    valid_dataset = Dataset(valid_split)
-    
-    print(f"train dataset size: {len(train_dataset)}")
-    print(f"valid dataset size: {len(valid_dataset)}")
+    train_dataset = processor.build_dataset([args.train_path])
+
+    valid_dataset = processor.build_dataset([args.valid_path])
+
+    metrics = {"training": [AccuracyMeter], "validation": [AccuracyMeter]}
 
     model_config = ModelParameters(
         model_name = args.config_name,
         hidden_size = args.hidden_size,
-        num_classes = len(LABELS_TO_ID),
+        num_classes = 2,
     )
 
     configuration = Configuration(
@@ -88,26 +71,25 @@ if __name__ == "__main__":
         tokenizer = transformers.AutoTokenizer.from_pretrained(args.model),
     )
 
-    train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="sequence", config=configuration)
-    valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="sequence", config=configuration)
+    train_data_loader = SmartParaphraseDataloader.build_batches(train_dataset, 16, mode="standard", config=configuration)
+    valid_data_loader = SmartParaphraseDataloader.build_batches(valid_dataset, 16, mode="standard", config=configuration)
 
-    metrics = {"training": [AccuracyMeter], "validation": [AccuracyMeter]}
 
-    model = distill_theseus(
+    compressed_model = distill_theseus(
         args, 
         configuration, 
         train_data_loader, 
         valid_data_loader, 
-        len(LABELS_TO_ID), 
-        metrics, 
+        num_labels=2, 
+        metrics=metrics, 
         use_wrapper=True, 
-        sentence_level=False)
+        sentence_level=True)
 
     
     evaluator = Evaluator(
         config_name="evaluate classifier",
         params = configuration,
-        model = model,
+        model = compressed_model,
         metrics = metrics,
         fp16 = True,
         verbose = True
@@ -115,5 +97,9 @@ if __name__ == "__main__":
     
     print("Evaluating compressed model")
     evaluator.evaluate(valid_data_loader)
+
+    
+
+
 
     

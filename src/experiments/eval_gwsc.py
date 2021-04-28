@@ -1,10 +1,9 @@
-from src.configurations import classifier_config as config
-from src.configurations import embeddings_config as embeddings_config
-from src.dataset.dataset import *
+from .gwsc_dataset import GWSCDataset
+from src.dataset.dataset import SmartParaphraseDataloader
+from src.models.word_encoder import GWSCModel
 from src.utils.metrics import SimilarityCorrelationMeter
-from src.models.modeling import GWSCModel
 from src.evaluation.evaluators import ParaphraseEvaluator
-
+import torch
 
 
 
@@ -19,7 +18,7 @@ if __name__ == "__main__":
 
     dataset = GWSCDataset.build_dataset(examples_paths, labels_paths)
 
-    data_loader = GWSCDataLoader.build_batches(dataset, config.BATCH_SIZE)
+    data_loader = SmartParaphraseDataloader.build_batches(dataset, 16, mode="word")
 
     model = GWSCModel(use_sense_embeddings=False, senses_as_features=False)
 
@@ -30,7 +29,7 @@ if __name__ == "__main__":
     evaluator = ParaphraseEvaluator(
         model = model,
         data_loader = data_loader,
-        device = config.DEVICE,
+        device = torch.device("cuda"),
         metrics = metric,
         fp16=True,
         verbose=True,

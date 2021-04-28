@@ -2,7 +2,7 @@
 
 Params: batch size: 16; number of epochs: 1; frozen weights: True; pretrained embeddings: False
 Model params: hidden size: 768; lr: 2e-05; merge strategy: None
-validation > epoch: 1; loss: 1.6465393133163453; accuracy: 0.4765; 
-training > epoch: 1; loss: 1.948536633682251; accuracy: 0.3242; 
+validation > epoch: 1; loss: 1.864319031906128; accuracy: 0.3762; 
+training > epoch: 1; loss: 2.0731847120285036; accuracy: 0.2517; 
 
 

@@ -1,3 +1,9 @@
+"""
+The code in this file is taken from BERT of Theseus repository:
+https://github.com/JetRunner/BERT-of-Theseus
+
+"""
+
 from src.models.bert_of_theseus import BertEncoder
 from src.models.distilbert_of_theseus import Transformer
 from typing import Union
