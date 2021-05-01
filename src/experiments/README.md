@@ -18,3 +18,13 @@ The Sense Embeddings approaches tested are [LMMS](https://github.com/danlou/LMMS
 
 ## Slides
 
+<img src="slides/Diapositiva3.png" width="400">  | <img src="slides/Diapositiva4.png" width="400">  |
+| <img src="slides/Diapositiva5.png" width="400">  | <img src="slides/Diapositiva6.png" width="400">  |
+| <img src="slides/Diapositiva7.png" width="400">  | <img src="slides/Diapositiva8.png" width="400">  |
+| <img src="slides/Diapositiva9.png" width="400">  | <img src="slides/Diapositiva10.png" width="400">  |
+| <img src="slides/Diapositiva11.png" width="400">  | <img src="slides/Diapositiva12.png" width="400"> |
+| <img src="slides/Diapositiva13.png" width="400">  | <img src="slides/Diapositiva14.png" width="400">  |
+| <img src="slides/Diapositiva15.png" width="400">  | <img src="slides/Diapositiva16.png" width="400">  |
+| <img src="slides/Diapositiva17.png" width="400">  | <img src="slides/Diapositiva18.png" width="400"> |
+| <img src="slides/Diapositiva19.png" width="400">  | <img src="slides/Diapositiva20.png" width="400"> |
+
