@@ -17,7 +17,7 @@ The Sense Embeddings approaches tested are [LMMS](https://github.com/danlou/LMMS
 
 
 ## Slides
-
+| --------------------------------- | --------------------------------- |
 | <img src="slides/Diapositiva3.png" width="400">  | <img src="slides/Diapositiva4.png" width="400">  |
  <img src="slides/Diapositiva5.png" width="400">  | <img src="slides/Diapositiva6.png" width="400">  |
  <img src="slides/Diapositiva7.png" width="400">  | <img src="slides/Diapositiva8.png" width="400">  |
