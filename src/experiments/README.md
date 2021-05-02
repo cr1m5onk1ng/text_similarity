@@ -32,3 +32,4 @@ The Sense Embeddings approaches tested are [LMMS](https://github.com/danlou/LMMS
 <img src="slides/Diapositiva18.png" width="400">
 <img src="slides/Diapositiva19.png" width="400"> 
 <img src="slides/Diapositiva20.png" width="400">
+<img src="slides/Diapositiva20.png" width="400">

@@ -1,4 +1,4 @@
-# Text Similarity with Transformer models
+# Text Similarity with Contextualised Embeddings
 
 This repository contains a library that I use for my **Natural language processing** projects.
 
