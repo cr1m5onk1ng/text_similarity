@@ -22,14 +22,14 @@ The Sense Embeddings approaches tested are [LMMS](https://github.com/danlou/LMMS
 
 <img src="slides/Diapositiva3.PNG" width="400">
 <img src="slides/Diapositiva4.PNG" width="400"> 
-<img src="slides/Diapositiva5.png" width="400">
-<img src="slides/Diapositiva9.png" width="400">
-<img src="slides/Diapositiva10.png" width="400"> 
-<img src="slides/Diapositiva11.png" width="400"> 
-<img src="slides/Diapositiva12.png" width="400">
-<img src="slides/Diapositiva13.png" width="400"> 
-<img src="slides/Diapositiva17.png" width="400"> 
-<img src="slides/Diapositiva18.png" width="400">
-<img src="slides/Diapositiva19.png" width="400"> 
-<img src="slides/Diapositiva20.png" width="400">
-<img src="slides/Diapositiva20.png" width="400">
+<img src="slides/Diapositiva5.PNG" width="400">
+<img src="slides/Diapositiva9.PNG" width="400">
+<img src="slides/Diapositiva10.PNG" width="400"> 
+<img src="slides/Diapositiva11.PNG" width="400"> 
+<img src="slides/Diapositiva12.PNG" width="400">
+<img src="slides/Diapositiva13.PNG" width="400"> 
+<img src="slides/Diapositiva17.PNG" width="400"> 
+<img src="slides/Diapositiva18.PNG" width="400">
+<img src="slides/Diapositiva19.PNG" width="400"> 
+<img src="slides/Diapositiva20.PNG" width="400">
+<img src="slides/Diapositiva20.PNG" width="400">
