@@ -23,13 +23,13 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, dest="lr", default=2e-5)
     parser.add_argument('--dp', type=float, dest="dropout", default=0.1)
     parser.add_argument('--bs', type=int, dest="batch_size", default=16)
-    parser.add_argument('--train_path', dest="train_path", type=str, default="../data/paws-x/en/train.tsv")
-    parser.add_argument('--valid_path', dest="valid_path", type=str, default="../data/paws-x/en/dev_2k.tsv")
+    parser.add_argument('--train_path', dest="train_path", type=str, default="../data/paws-x/ja/translated_train.tsv")
+    parser.add_argument('--valid_path', dest="valid_path", type=str, default="../data/paws-x/ja/dev_2k.tsv")
     parser.add_argument('--save_path', dest="save_path", type=str, default="output/distillation")
     parser.add_argument('--fp16', type=bool, dest="mixed_precision", default=True)
     parser.add_argument('--hidden_size', type=int, dest="hidden_size", default=768)
     parser.add_argument('--seq_len', type=int, dest="seq_len", default=128)
-    parser.add_argument('--scc_n_layer', type=int, dest="scc_n_layer", default=4)
+    parser.add_argument('--scc_n_layer', type=int, dest="scc_n_layer", default=3)
     parser.add_argument('--device', type=str, dest="device", default="cuda")
     parser.add_argument('--model', type=str, dest="model", default="sentence-transformers/quora-distilbert-multilingual")
     parser.add_argument('--pooling', type=str, dest="pooling_strategy", default="avg")
@@ -83,9 +83,10 @@ if __name__ == "__main__":
         num_labels=2, 
         metrics=metrics, 
         use_wrapper=True, 
-        sentence_level=True)
+        sentence_level=True,
+        save_for_inference=True)
 
-    
+    """
     evaluator = Evaluator(
         config_name="evaluate classifier",
         params = configuration,
@@ -97,7 +98,7 @@ if __name__ == "__main__":
     
     print("Evaluating compressed model")
     evaluator.evaluate(valid_data_loader)
-
+    """
     
 
 

@@ -53,6 +53,7 @@ def distill_theseus(
     metrics: dict, 
     use_wrapper: bool=False, 
     sentence_level: bool=False, 
+    save_for_inference: bool=False,
     merging_strategy:nn.Module=None) -> nn.Module:
     """
     This function applies a module replacement distillation strategy desribed
@@ -68,6 +69,7 @@ def distill_theseus(
     :param metrics: The metics for training and validations
     :param use_wrapper: Whether to use the library wrapper for transformers models or some huggingface model directly
     :param sentence_lebel: Whether the task is a sentence-level task, thus requiring a Bi-Encoder transformer
+    :param save_for_inference: Whether to save the model for inference purposes
     :param merging_strategy: The merging-strategy required for sentence-level downstream task, in case a Bi-Encoder model is used
 
     :returns The compressed model
@@ -171,7 +173,7 @@ def distill_theseus(
         return_model=True
     )
 
-    model = trainer.execute(write_results=True)
+    model = trainer.execute(write_results=False)
     
     if is_distilbert:
         if use_wrapper:
@@ -215,20 +217,37 @@ def distill_theseus(
         new_context_embedder = transformers.BertModel.from_pretrained(args.model, config=compressed_model.config, state_dict = compressed_model.state_dict())
 
     if sentence_level:
-        new_transformer = SentenceTransformerWrapper(
-            params = configuration,
-            context_embedder = new_context_embedder,
-            pooler = pooler,
-            projection = model.projection
-        )
+        if save_for_inference:
+            new_transformer = OnnxSentenceTransformerWrapper(
+                params = configuration,
+                context_embedder = new_context_embedder,
+                projection = model.projection,
+            )
+        else:
+            new_transformer = SentenceTransformerWrapper(
+                params = configuration,
+                context_embedder = new_context_embedder,
+                pooler = pooler,
+                merge_strategy=model.merge_strategy,
+                loss = model.loss,
+                projection = model.projection
+            )
 
     else:
-        new_transformer = OnnxTransformerWrapper(
-            params = configuration,
-            context_embedder = new_context_embedder,
-            pooler = pooler,
-            output = output
-        )
+        if save_for_inference:
+            new_transformer = OnnxTransformerWrapper(
+                params = configuration,
+                context_embedder = new_context_embedder,
+                pooler = pooler,
+                output = output
+            )
+        else:
+            new_transformer = TransformerWrapper(
+                params = configuration,
+                context_embedder = new_context_embedder,
+                pooler = pooler,
+                loss = model.loss
+            )
 
     saved_params = count_model_parameters(new_context_embedder)
     print(f"Saved model number of paramaters: {saved_params}")

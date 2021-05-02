@@ -20,8 +20,9 @@ which offers a wide variety of options for very performant sentence embeddings m
 
 1. Scripts to train and test word-level and sentence-level embeddings models on various NLP tasks
 2. Wrappers around Huggingface pretrained model to perform experiments on text similarity tasks
-3. A semantic search pipeline built on top of performing sentence embedding models and approximate nearest neighborghs algorithms
+3. A semantic search pipeline built on top of performing sentence embedding models and approximate nearest neighbours algorithms
 4. A model compression pipeline that includes functions to distill, prune, quantize and convert models to optimized formats such as Onnx, Tensorflow Lite and Torchscript to use in edge devices
+5. Scripts to train models on a variety of text similarity and sequence classification tasks
 
 ## Author
 
