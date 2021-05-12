@@ -1,0 +1,11 @@
+numpy
+pandas
+scikit-learn
+tqdm
+torch
+torchvision
+tensorboardX
+transformers
+onnx
+onnxruntime
+hnswlib
