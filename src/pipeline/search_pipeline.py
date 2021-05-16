@@ -86,8 +86,8 @@ class SentenceMiningPipeline(SearchPipeline):
         return top_candidates
 
 
-    def __call__(self, queries: Union[List[str], torch.Tensor], max_num_results: int, return_embeddings: bool=False):
-        return self._search(queries, max_num_results, return_embeddings)
+    def __call__(self, queries: Union[List[str], torch.Tensor], max_num_results: int):
+        return super().__call__(queries, max_num_results)
 
 
 class SemanticSearchPipeline(SearchPipeline):
