@@ -36,10 +36,6 @@ class BaseEncoderModel(nn.Module):
             context_embedder=context_embedder
         )
 
-    @property
-    def model_name(self):
-        return self.params.model_parameters.model_name
-
     def set_hidden_size(self, paraphrase=True):
         embedder_size = self.embedding_size
         pretrained_size = self.params.pretrained_embeddings_dim
@@ -61,6 +57,10 @@ class BaseEncoderModel(nn.Module):
         self.params.tokenizer.save_pretrained(path)
         config_path = os.path.join(path, "model_config.bin")
         torch.save(self.params, config_path)
+
+    @property
+    def model_name(self):
+        return self.params.model_parameters.model_name
 
     @property
     def config(self):

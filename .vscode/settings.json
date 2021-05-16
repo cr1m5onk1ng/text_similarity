@@ -1,4 +1,4 @@
 {
     "python.formatting.provider": "black",
-    "python.pythonPath": "/home/mirco/anaconda3/envs/dl/bin/python"
+    "python.pythonPath": "C:\\Users\\mirco\\anaconda3\\envs\\dl\\python.exe"
 }

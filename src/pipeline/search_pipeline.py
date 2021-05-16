@@ -1,6 +1,7 @@
 import os
+from src.configurations.config import SearchConfiguration
 from src.models.sentence_encoder import SentenceTransformerWrapper
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -8,25 +9,25 @@ import time
 import hnswlib
 import onnxruntime
 import numpy as np
+from tqdm.std import trange
 
 class Pipeline:
-    def __init__(self, name):
-        self.name = name
+    def __init__(self, params: SearchConfiguration, model: nn.Module):
+        self.params = params
+        self.model = model
 
-    def encode_corpus(self, documents: Union[List[str], torch.Tensor], return_embeddings: bool=False, convert_to_numpy=False) -> Union[List[str], torch.Tensor]:
-        if isinstance(self.corpus, torch.Tensor):
-            assert len(self.corpus.shape) == 2 #batch_size, embed_dim
-
-        if isinstance(documents, list) and not return_embeddings:
+    def encode_corpus(self, documents: Union[List[str], torch.Tensor], convert_to_numpy=False) -> Union[List[str], torch.Tensor]:
+        if isinstance(documents, list):
             return self.model.encode_text(documents, output_np=convert_to_numpy)
         return documents
 
-
 class SearchPipeline(Pipeline):
-    def __init__(self, corpus: Union[List[str], List[torch.Tensor], torch.Tensor], model: nn.Module, *args, **kwargs):
+    def __init__(self, *args, corpus: Optional[List[str]] = None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.corpus = corpus 
-        self.model = model
+        self.corpus = corpus
+
+    def _index(self, corpus: List[str]):
+        raise NotImplementedError()
 
     def _search(self, queries: Union[List[str], torch.Tensor], max_num_results: int):
         raise NotImplementedError()
@@ -92,61 +93,46 @@ class SentenceMiningPipeline(SearchPipeline):
 class SemanticSearchPipeline(SearchPipeline):
     def __init__(
         self, 
+        index_path,
         *args, 
-        index_path: str = None, 
-        ef: int = 50, 
-        ef_construction: int = 400, 
-        M: int = 64, 
         **kwargs):
 
         super().__init__(*args, **kwargs)
         self.index_path = index_path
-        self.ef = ef
-        self.ef_construction = ef_construction
-        self.M = M
+        self.index = hnswlib.Index(space = 'cosine', dim = self.params.model_parameters.hidden_size)
+        if os.path.exists(os.path.join(self.index_path, "index.bin")):
+            self.index.load_index(self.index_path)
+        else:
+            self._index(self.corpus)
+
+    def _index(self, corpus: List[str]):
+        os.makedirs(self.index_path)
+        print("#### Computing Corpus Embeddings. This may take a while. ####")
+        corpus_embeddings = self.encode_corpus(self.corpus, convert_to_numpy=True)
+        print("Done.")
+        print("Building the index. This may take a while...")
+        self.index.init_index(
+            max_elements = len(corpus), 
+            ef_construction = self.params.ef_construction, 
+            M = self.params.M)
+        self.index.add_items(corpus_embeddings, list(range(corpus_embeddings.shape[0])))
+        self.index.save_index(self.index_path)
+        print("Done.")
+        self.index.set_ef(self.params.ef)
 
     def _search(
         self, 
-        queries: Union[List[str], 
-        torch.Tensor], 
-        max_num_results: int, 
-        return_embeddings: bool=False) -> Dict[int, List[str]]:
-        
-        #### INDEX PREPARATION ####
-        print("####   Computing Query Embeddings...   ####")
-        query_embeddings = self.encode_corpus(documents=queries, return_embeddings=return_embeddings, convert_to_numpy=True)
-        print("Done.")
-        print()
+        queries: Union[List[str], torch.Tensor], 
+        max_num_results: int) -> Dict[int, List[str]]:
 
-        embed_size = self.model.embedding_size
-  
-        index = hnswlib.Index(space = 'cosine', dim = embed_size)
+        assert max_num_results < self.params.ef, "ef hyperparam should less than the maximun number of results"
 
-        if os.path.exists(self.index_path):
-            index.load_index(self.index_path)
-        else:
-            os.makedirs(self.index_path)
-            print("#### Computing Corpus Embeddings. This may take a while. ####")
-            corpus_embeddings = self.model.encode_text(self.corpus, output_np=True)
-            print("Done.")
-            print("Building the index. This may take a while...")
-            index.init_index(
-                max_elements = len(self.corpus), 
-                ef_construction = self.ef_construction, 
-                M = self.M)
+        query_embeddings = self.encode_corpus(queries, convert_to_numpy=True)
 
-            index.add_items(corpus_embeddings, list(range(corpus_embeddings.shape[0])))
-
-            index.save_index(self.index_path)
-            print("Done.")
-        assert max_num_results < self.ef
-        index.set_ef(self.ef)
-
-        #### ACTUAL SEARCH ####
         top_results = {}
 
         for qidx, query in enumerate(query_embeddings):
-            hits_ids, distances = index.knn_query(query, k=max_num_results)
+            hits_ids, distances = self.index.knn_query(query, k=max_num_results)
             results = [(id, 1-score) for id, score in zip(hits_ids[0], distances[0])]
             results = sorted(results, key = lambda x: x[1], reverse=True)
             candidate_texts = []
@@ -158,10 +144,32 @@ class SemanticSearchPipeline(SearchPipeline):
     def __call__(
         self,
         queries: Union[List[str], torch.Tensor], 
-        max_num_results: int, 
-        return_embeddings: bool=False):
+        max_num_results: int):
 
-        return self._search(queries, max_num_results, return_embeddings)
+        return self._search(queries, max_num_results)
+
+    def add_to_index(self, text: Union[str, List[str]]):
+        embeddings = self.encode_corpus(text, convert_to_numpy=True)
+        added_length = embeddings.shape[0]
+        self.index.resize_index(self.params.num_elements + added_length)
+        labels = np.arange(self.params.num_elements, self.params.num_elements + added_length)
+        self.index.add_items(embeddings, labels, num_threads = -1)
+        self.params.num_elements += added_length
+
+    def remove_from_index(self, ids):
+        for id in ids:
+            try:
+                self.index.mark_deleted(id)
+                self.params.num_removed += 1
+            except RuntimeError:
+                # can't find id, continue
+                continue
+
+    def num_indexed(self):
+        """
+        returns the current number of indexed embeddings
+        """
+        return self.index.get_current_count() - self.params.num_removed
 
 
 class APISearchPipeline(SemanticSearchPipeline):
@@ -170,87 +178,50 @@ class APISearchPipeline(SemanticSearchPipeline):
         params,
         max_n_results: int, 
         *args, 
-        inference_mode: bool=False, 
-        session_options:bool=None,
+        inference_mode: bool=True, 
+        session_options: bool=None,
         **kwargs):
         super().__init__(*args, **kwargs)
         self.params = params
         self.inference_mode = inference_mode
         self.sess_options = session_options
         self.max_n_results = max_n_results
-        if self.inference_mode:
-            if self.sess_options is None:
-                self.sess_options = onnxruntime.SessionOptions()
-            self.session = onnxruntime.InferenceSession(self.params.model_path, self.sess_options)
-        # load index
-        self.index = hnswlib.Index(space = 'cosine', dim = self.params.model_parameters.hidden_size)
-        index_load_path = os.path.join(self.index_path, "index.bin")
-        if not os.path.exists(index_load_path):
-            os.makedirs(self.index_path, exist_ok=True)
-            print("No index found. Building index from corpus...")
-            corpus_embeddings = self.model.encode_text(self.corpus, output_np=True)
-            self.index.init_index(
-                max_elements = len(self.corpus), 
-                ef_construction = self.ef_construction, 
-                M = self.M)
-            self.index.add_items(corpus_embeddings, list(range(corpus_embeddings.shape[0])))
-            index_save_path = os.path.join(self.index_path, "index.bin")
-            self.index.save_index(index_save_path)
-            print("Done.")
-        else:
-            assert os.path.exists(self.index_path)
-            self.index.load_index(index_load_path)
+        if self.sess_options is None:
+            self.sess_options = onnxruntime.SessionOptions()
+        self.session = onnxruntime.InferenceSession(self.params.model_path, self.sess_options)
 
     def __call__(
         self,
         queries: Union[List[str], torch.Tensor], 
-        max_num_results: int, 
-        return_embeddings: bool=False):
-        if self.inference_mode:
-            return self._predict(queries)
-        return self._search(queries, max_num_results, return_embeddings)
-
-    def add_elements(self, text: Union[str, List[str]]):
-        embeddings = self.model.encode_text(text, output_np=True)
-        data_labels = np.arange(len(embeddings))
-        self.index.add_items(embeddings, data_labels, num_threads = -1)
-
-    def _predict(self, input: str):
-        tokenized_dict = self.params.tokenizer(
-            text=input,
-            add_special_tokens=True,
-            padding='longest',
-            truncation=True,
-            max_length=self.params.sequence_max_len,
-            return_attention_mask=True,
-            return_token_type_ids=True,
-            return_tensors='np'
-        )
-        inputs = {
-            'input_ids':  tokenized_dict["input_ids"].reshape(1, -1),
-            'attention_mask': tokenized_dict["attention_mask"].reshape(1, -1),
-        }
-
-        output = self.session.run(None, inputs)
-        query_embeddings = output[0]
-        return self._search(text=input, query_embeddings=query_embeddings)
-
-    def _search(self, text: Union[str, List[str]], query_embeddings = None):
-        if isinstance(text, str):
-            text = [text]
-        if query_embeddings is None:
-            query_embeddings = self.model.encode_text(text, output_np=True)
-        assert self.max_n_results < self.ef
-        self.index.set_ef(self.ef)
-        hits_ids, distances = self.index.knn_query(query_embeddings, k=self.max_n_results)
-        # search in index
-        results = [(id, 1-score) for id, score in zip(hits_ids[0], distances[0])]
-        results = sorted(results, key = lambda x: x[1], reverse=True)
-        candidate_texts = []
-        for hit_idx, _ in results:
-            candidate_texts.append(self.corpus[hit_idx])
-        # return results
-        return candidate_texts
+        max_num_results: int):
+        return self._search(queries, max_num_results)
+       
+    def encode_corpus(self, documents: List[str]) -> Union[torch.Tensor, np.array]:
+        length_sorted_idx = np.argsort([len(sen) for sen in documents])
+        documents = [documents[idx] for idx in length_sorted_idx]
+        encoded_documents = []
+        for start_index in trange(0, len(documents), self.params.batch_size):
+            sentences_batch = documents[start_index:start_index+self.params.batch_size]   
+            encoded_dict = self.params.tokenizer(
+                    text=sentences_batch,
+                    add_special_tokens=True,
+                    padding='longest',
+                    truncation=True,
+                    max_length=self.params.sequence_max_len,
+                    return_attention_mask=True,
+                    return_token_type_ids=False,
+                    return_tensors='np'
+            )
+            inputs = {
+            'input_ids': encoded_dict["input_ids"].reshape(1, -1),
+            'attention_mask': encoded_dict["attention_mask"].reshape(1, -1),
+            }
+            output = self.session.run(None, inputs)
+            embeddings = output[0]
+            encoded_documents.extend(embeddings)
+        encoded_documents = [encoded_documents[idx] for idx in np.argsort(length_sorted_idx)]
+        return encoded_documents
+     
 
     
 

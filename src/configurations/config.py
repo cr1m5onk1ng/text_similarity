@@ -38,6 +38,13 @@ class Configuration:
 
 
 @dataclass
+class SearchConfiguration(Configuration):
+    ef: int = 50, 
+    ef_construction: int = 400, 
+    M: int = 64, 
+
+
+@dataclass
 class WordModelConfiguration(Configuration):
     embedding_map: Dict[str, torch.Tensor] = None
     bnids_map: Dict[str, torch.Tensor] = None
