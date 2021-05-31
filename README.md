@@ -24,6 +24,10 @@ which offers a wide variety of options for very performant sentence embeddings m
 4. A model compression pipeline that includes functions to distill, prune, quantize and convert models to optimized formats such as Onnx, Tensorflow Lite and Torchscript to use in edge devices
 5. Scripts to train models on a variety of text similarity and sequence classification tasks
 
+## Work in Progress
+- [ ] Sense-aware embeddings creation exploiting WordNet relations and contextualised embeddings
+- [ ] PySpark integration for faster text processing
+
 ## Author
 
 **Mirco Cardinale**
