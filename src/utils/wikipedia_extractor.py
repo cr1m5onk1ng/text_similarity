@@ -15,8 +15,7 @@ __version__ = '3.0.5'
 # READER
 
 tagRE = re.compile(r'(.*?)<(/?\w+)[^>]*>(?:([^<]*)(<.*?>)?)?')
-#tagRE = re.compile(r'(.*?)<(/?\w+)[^>]*>([^<]*)')
-#                    1     2            3
+
 
 def process_data(input_file, id, templates=False):
     """
@@ -104,7 +103,7 @@ class WikipediaExtractor:
 
     def _map_documents_to_response(self, documents_list) -> List[WikipediaResponse]:
         documents = list(map(lambda doc: self._map_document_to_response(doc), documents_list))
-        assert documents
+        #assert documents
         return documents
 
     def extract_page(self, page_id: str, dump_file_path: str):

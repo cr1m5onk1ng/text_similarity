@@ -9,7 +9,6 @@ import os
 import torch
 from torch.nn import functional as F
 from src.configurations import config as config
-import nltk
 
 
 def flat_map(f, xs):

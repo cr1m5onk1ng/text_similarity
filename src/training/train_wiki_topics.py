@@ -12,8 +12,8 @@ import numpy as np
 from sklearn import metrics
 from src.utils import utils as utils
 from src.configurations import config as config
-from src.models.losses import SoftmaxLoss
-from src.modules.pooling import SequencePoolingStrategy, WordSensePoolingStrategy, WordPoolingStrategy
+
+from src.modules.modules import SequencePoolingStrategy, WordSensePoolingStrategy, WordPoolingStrategy, SoftmaxLoss
 from src.utils.metrics import AccuracyMeter
 from src.training.learner import Learner
 from src.training.train import Trainer
@@ -84,16 +84,17 @@ if __name__ == "__main__":
         lang = lang
     )
 
-    #print("Searching page ids...")
-    #ids = extractor.extract_ids_from_categories(CATEGORIES, max_pages=500)
-    #print("Done.")
-    #print()
-    #print("Building dataset.")
-    #files = list(utils.search_files("../data/wikipedia-dump/japanese/extracted/"))
-    #dataset = WikipediaDataset.from_collection(files, page_ids=ids, max_n_docs=None, max_n_tokens=64)
-    #utils.save_file(dataset, "../dataset/cached/", "wikipedia-topics")
-    dataset = utils.load_file("../dataset/cached/wikipedia-topics")
-    #print("Done")
+    #dataset = utils.load_file("../dataset/cached/wikipedia-topics")
+
+    print("Searching page ids...")
+    ids = extractor.extract_ids_from_categories(CATEGORIES, max_pages=500)
+    print("Done.")
+    print()
+    print("Building dataset.")
+    files = list(utils.search_files("../data/wikipedia-dump/japanese/extracted/"))
+    dataset = WikipediaDataset.from_collection(files, page_ids=ids, max_n_docs=None, max_n_tokens=64)
+    utils.save_file(dataset, "../dataset/cached/", "wikipedia-topics")
+    print("Done")
     
     print(f"Dataset size {len(dataset)}")
     """
