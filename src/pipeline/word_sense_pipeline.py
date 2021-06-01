@@ -3,7 +3,7 @@ This script contains a pipeline to build sense embeddings with Transformer Encod
 starting from a corpus of sentences, taking advantage of the information available in 
 Lexical Knowledge Bases such as WordNet. 
 
-WORKING ON A MIGRATION OF THE TEXT PROCESSING SECTION TO PYSPARK FOR QUITE THE SPEEDUP
+WORKING ON BUILDING THE PIPELINE WITH PYSPARK FOR QUITE THE SPEEDUP
 (Although it would require writing custom Annotators, I guess)
 """
 
@@ -14,34 +14,43 @@ WORKING ON A MIGRATION OF THE TEXT PROCESSING SECTION TO PYSPARK FOR QUITE THE S
 # STEP 2 - Contexts extraction
 #### For a given lemma l pertaining to a synset s, find all occurences of l
 #### in the corpus C and encode them with BERT 
+#### PROCEDURE: 
+##### 1. For each sentence, map every token to its set of possible lemmas. Each lemma pertains to a certain synset, so we can
+#####    always find the synset pertaining to the lemma from the lemma itself
+##### 2. For each sentence, map every token in the sentence to a set of synsets. Each synset has a set of lemmas with the same sense
+##### 3. For each token, compute its BERT embedding (subwords representations are merged via avg pooling)
 
-# STEP 3 - Clustering
-#### Cluster the contextualized vectors for any lemma l pertaining to a synset s 
-#### using a clustering algorithm
+# STEP 3 - Clustering and sense-cluster association
+#### THE PROBLEM: We have to assign to every encoded word in a sentence a meaning (synsnet)
+#### POSSIBLE SOLUTION: Cluster the contextualized vectors for any lemma l pertaining to a synset s 
+#### using a clustering algorithm. This way, we can (carefully) affirm that the lemma l present
+#### in the sentences of a cluster is used with the same meaning across the sentences, effectively
+#### making the problem similar to a ranking problem.
+#### PROCEDURE:
+##### 1. For each cluster for a particular lemma l, compare the representation of the sentences part of the cluster with 
+#####    the gloss of every possible sense of the lemma l. The highest scoring gloss will give us the most probable sense
+#####    for the lemma l
 
-# STEP 4 - Sense-cluster association (word-sense disambiguation)
-#### Associate each cluster with one of the possible meanings (synset) of the lemma l and identify the cluster associated with the sense s
-#### HOW? ARES uses UKB pageRank to do the job. A possible alternative could be to calculate a similarity score between the top sentences
-#### of every cluster with the encoded gloss g of every synset s associated with the lemmas in the cluster with a cross-encoder model, 
-#### effectively reducing the problem to a ranking problem
-
-# STEP 5 - Contexts collection for every synset
+# STEP 4 - Contexts collection for every synset
 #### Collect a set of contexts (sentences) for every lemma l for the sense s. 
 
-# STEP 6 - Enriching contexts for every synset
-#### Once we have a set of contexts for a synset s, we compute a vector representation for s 
-#### HOW? Ares takes all the lemmas l' of every synset s' related to s in SyntagNet, and then, for every l and l', 
-#### finds the sentences in corpus thant contain l and l' within a certain window (let's say window 3)
-#### ALTERNATIVE
+# STEP 5 - Enriching contexts for every synset with related synsets
+#### THE PROBLEM: Once we have a set of contexts for a synset s (that is, we have labeled our collection of lemmas with their 
+#### most probavle senses), we compute a vector representation for s 
+#### POSSIBLE SOLUTION: 
+#### 1. Simply averaging all the representations of the lemmas tagged with the sense s, for every sense
+####    found in the corpus
+#### 2. Enriching the collection of lemmas for every sense s with other synsets related to s (that is, synsets that contain
+####    lemmas that co-occur frequently with the lemmas of s) 
 
-# STEP 7.1 - Sense embeddings (I)
-#### We use SemCor corpus to compute, for every sense S of every synset syn, we compute the embedding representation
+# STEP 6.1 - Sense embeddings (I)
+#### We use SemCor corpus to compute, for every sense S of every synset syn, the embedding representation
 #### for S by averaging the BERT representations of every word in SemCor tagged with S
 
-# STEP 7.2 - Sense embeddings (II)
+# STEP 6.2 - Sense embeddings (II)
 #### We use WordNet glosses to build gloss embeddings. For every sense S of a synset syn, we build the gloss representation
 #### by prepending all the lemmas of syn to the gloss g and encoding it with BERT
-#### HOW . ARES computes the final embeddings this way: V[SC] || mean(V[G], V[S])
+#### HOW? ARES computes the final embeddings this way: V[SC] || mean(V[G], V[S])
 #### where V[SC] are the SemCor embeddings, || is concatenation, V[G] are the gloss embeddings and V[S] are the synset embeddings
 
 import nltk
@@ -84,8 +93,8 @@ def get_all_wn_words() -> List[str]:
 
 class WordSenseProcessingPipeline():
   """
-  A pipeline to process the text in a format suitable
-  to the building of sense embeddings
+  A pipeline to process the text extracting lexical information
+  from the WordNet graph
   """
   def __init__(
     self, 
