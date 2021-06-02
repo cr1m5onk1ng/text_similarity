@@ -68,6 +68,12 @@ import torch
 from src.utils.tokenizers import JapaneseTokenizer
 from collections import defaultdict
 from tqdm import tqdm
+from src.modules.pyspark_extensions import (
+    WordNetSynsetTransformer, 
+    WordNetLemmaTransformer, 
+    WordNetGlossTransformer
+)
+
 
 @dataclass
 class WnSynset():
@@ -87,14 +93,99 @@ class WnLemma():
   def __eq__(self, other):
     return self.name == other.name
 
-
 def get_all_wn_words() -> List[str]:
     return wn.words(lang="jpn")
 
+class SparkWordSensePipeline():
+
+  def __init__(self, annotators: list, stages: dict = {}):
+    """
+    params:
+      :annotators list of pyspark annotators that make up a pipeline
+      :pipeline a predifined pyspark pipeline
+      :model a pyspark model, result of fitting a pipeline to some data
+    """
+    self.annotators = annotators
+    self.models = []
+    # stages are different pipelines that might be applied sequentially
+    self.stages = stages 
+
+  @classmethod
+  def from_annotators(cls, annotators):
+    """
+    Builds a PySpark pipeline to prepare the text for
+    sense embeddings creation. Covers steps from 1 to 3
+    """
+    if not annotators:
+      annotators = [
+        DocumentAssembler() \
+          .setInputCol("comment_text") \
+          .setOutputCol("document")\
+          .setCleanupMode('shrink'),
+
+        Tokenizer() \
+          .setInputCols(["document"]) \
+          .setOutputCol("token"),
+
+        StopWordsCleaner()\
+          .setInputCols("normalized")\
+          .setOutputCol("cleanTokens")\
+          .setCaseSensitive(False),
+
+        LemmatizerModel.pretrained() \
+          .setInputCols(["cleanTokens"]) \
+          .setOutputCol("lemma"),
+
+        WordNetSynsetTransformer() \
+          .setInputCols("lemma")\
+          .setOutputCol("wn_synset"),
+
+        WordNetLemmaTransformer() \
+          .setInputCols("lemma")\
+          .setOutputCol("wn_lemmas"),
+
+        WordNetGlossTransformer() \
+          .setInputCols("wn_synset")\
+          .setOutputCol("wn_glosses"),
+
+        BertEmbeddings.pretrained('bert_base_uncased', 'en') \
+          .setInputCols("document", "token") \
+          .setOutputCol("embeddings")\
+      ]
+
+    pipeline = Pipeline(stages=[*annotators])
+    stages = {"default": pipeline}
+
+    return cls(annotators, stages)
+
+  def _check_stage_present(self, stage_id: str):
+    if stage_id not in self.stages:
+      raise Exception("stage already present in the pipeline")
+
+  def add_stage(self, stage_id: str, pipeline: Pipeline):
+    self._check_stage_present(stage_id)
+    self.stages[stage_id] = pipeline
+
+  def fit(self, stage_id, data):
+    self._check_stage_present(stage_id)
+    self.models.append(self.stages[stage_id].fit(data))
+
+  def fit_all(self, data):
+    for pipe in self.stages.values():
+      self.models.append(pipe.fit(data))
+
+  def transform(self, stage_id, data):
+    self._check_stage_present(stage_id)
+    self.stages[stage_id].transform(data)
+
+  def cluster(self, data):
+    raise NotImplementedError()
+    
+
 class WordSenseProcessingPipeline():
   """
-  A pipeline to process the text extracting lexical information
-  from the WordNet graph
+  A pipeline to process the text by extracting lexical information
+  from the WordNet graph and combine this information to build sense embeddings
   """
   def __init__(
     self, 
