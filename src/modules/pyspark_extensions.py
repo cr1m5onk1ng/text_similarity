@@ -82,3 +82,45 @@ class WordNetSynsetTransformer(Transformer, HasInputCol, HasOutputCol, DefaultPa
         return dataset.withColumn(out_col, word2synsets(in_col))
 
 
+class WordNetGlossTransformer(Transformer, HasInputCol, HasOutputCol, DefaultParamsReadable, DefaultParamsWritable, MLReadable, MLWritable):
+    """
+    PySpark Transformer that maps synsets to their respective definition (glosses)
+    This transformer must be applied to a column consisting of Wordnet synset keys
+    """
+    @keyword_only
+    def __init__(self, inputCol=None, outputCol=None):
+        module = __import__("__main__")
+        setattr(module, 'WordNetGlossTransformer', WordNetGlossTransformer)
+        super(WordNetGlossTransformer, self).__init__()
+        kwargs = self._input_kwargs
+        self.setParams(**kwargs)
+
+    @keyword_only
+    def setParams(self, inputCol=None, outputCol=None):
+        kwargs = self._input_kwargs
+        return self._set(**kwargs)
+
+    def gloss(self, synset):
+        return wn.synset(synset).definition()
+
+    def _transform(self, dataset):
+         # User defined function to map every word to a list of lemmas
+        syn2gloss = udf(lambda syn: self.gloss(syn), ArrayType(StringType()))
+
+        # Select the input column
+        in_col = dataset[self.getInputCol()]
+
+        # Get the name of the output column
+        out_col = self.getOutputCol()
+
+        #return dataset.withColumn(out_col, F.explode(text2lemmas(in_col)))
+        return dataset.withColumn(out_col, syn2gloss(in_col))
+
+
+"""
+["I'll be going to the bank tomorrow", "Yesterday the bank was closed", "you should be able to go to the bank and solve the issue"]
+
+["What about a walk along the river bank?", "today the banks look pretty dirty, I wonder what happened", "The forest extends across the banks of the old river]
+
+
+"""
