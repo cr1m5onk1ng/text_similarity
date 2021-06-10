@@ -27,9 +27,9 @@ WORKING ON BUILDING THE PIPELINE WITH PYSPARK FOR QUITE THE SPEEDUP
 #### in the sentences of a cluster is used with the same meaning across the sentences, effectively
 #### making the problem similar to a ranking problem.
 #### PROCEDURE:
-##### 1. For each cluster for a particular lemma l, compare the representation of the sentences part of the cluster with 
+##### 1. For each cluster of any particular lemma l, compare the representation of the sentences part of the cluster with 
 #####    the gloss of every possible sense of the lemma l. The highest scoring gloss will give us the most probable sense
-#####    for the lemma l
+#####    for the lemma l, and a sense tag for the sentences of the cluster
 
 # STEP 4 - Contexts collection for every synset
 #### Collect a set of contexts (sentences) for every lemma l for the sense s. 
@@ -97,17 +97,14 @@ def get_all_wn_words() -> List[str]:
     return wn.words(lang="jpn")
 
 class SparkWordSensePipeline():
-
   def __init__(self, annotators: list, stages: dict = {}):
     """
     params:
       :annotators list of pyspark annotators that make up a pipeline
-      :pipeline a predifined pyspark pipeline
-      :model a pyspark model, result of fitting a pipeline to some data
+      :stages collection of pipelines that need to be applied sequentially
     """
     self.annotators = annotators
     self.models = []
-    # stages are different pipelines that might be applied sequentially
     self.stages = stages 
 
   @classmethod
@@ -158,16 +155,22 @@ class SparkWordSensePipeline():
 
     return cls(annotators, stages)
 
-  def _check_stage_present(self, stage_id: str):
-    if stage_id not in self.stages:
+  def _check_stage_already_present(self, stage_id: str):
+    if stage_id in self.stages:
       raise Exception("stage already present in the pipeline")
 
+  def _check_state_not_present(self, stage_id: str):
+    if stage_id not in self.stages:
+      raise Exception("stage already present in the pipeline")
+    
   def add_stage(self, stage_id: str, pipeline: Pipeline):
-    self._check_stage_present(stage_id)
+    self._check_stage_already_present(stage_id)
     self.stages[stage_id] = pipeline
 
-  def fit(self, stage_id, data):
-    self._check_stage_present(stage_id)
+  def fit(self, data, stage_id=None):
+    if stage_id is None:
+      stage_id = "default"
+    self._check_state_not_present(stage_id)
     self.models.append(self.stages[stage_id].fit(data))
 
   def fit_all(self, data):
@@ -175,11 +178,8 @@ class SparkWordSensePipeline():
       self.models.append(pipe.fit(data))
 
   def transform(self, stage_id, data):
-    self._check_stage_present(stage_id)
+    self._check_state_not_present(stage_id)
     self.stages[stage_id].transform(data)
-
-  def cluster(self, data):
-    raise NotImplementedError()
     
 
 class WordSenseProcessingPipeline():

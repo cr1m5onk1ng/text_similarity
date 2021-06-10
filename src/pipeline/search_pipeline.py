@@ -44,6 +44,7 @@ class SentenceMiningPipeline(SearchPipeline):
     def _search(
         self, 
         queries: Union[List[str], torch.Tensor], 
+        corpus: List[str],
         max_num_results: int, 
         return_embeddings: bool = False) -> Dict[int, Union[List[str], torch.Tensor]]:
 
@@ -54,6 +55,8 @@ class SentenceMiningPipeline(SearchPipeline):
         print(f"Queries dimension: {query_embeddings.size()}")
         print()
         top_candidates = {}
+        if corpus is not None:
+            self.corpus = corpus
         for corpus_index in range(0, len(self.corpus), self.corpus_chunk_size):
             corpus_chunk = self.corpus[corpus_index:self.corpus_chunk_size]
             if isinstance(self.corpus, list):
@@ -72,7 +75,7 @@ class SentenceMiningPipeline(SearchPipeline):
                 # with all the corpus sentences
                 query_embedding = query_embedding.unsqueeze(0).expand_as(corpus_chunk)
                 scores = F.cosine_similarity(query_embedding, corpus_chunk, dim=-1)
-                top_scores = torch.topk(scores, min(max_num_results, len(queries)), sorted=False)
+                top_scores = torch.topk(scores, min(max_num_results, len(queries)), dim=1, sorted=False, largest=True)
                 actual_candidates = top_scores[1]
                 print(f"Top candidates indexes: {actual_candidates}")
                 if return_embeddings:
@@ -81,7 +84,7 @@ class SentenceMiningPipeline(SearchPipeline):
                 else:
                     candidates = []
                     for cidx in actual_candidates:
-                        candidates.append(self.corpus[cidx])
+                        candidates.append((cidx, self.corpus[cidx]))
                     top_candidates[query_idx] = candidates
         return top_candidates
 

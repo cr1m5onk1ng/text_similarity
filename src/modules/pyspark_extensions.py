@@ -123,4 +123,5 @@ class WordNetGlossTransformer(Transformer, HasInputCol, HasOutputCol, DefaultPar
 ["What about a walk along the river bank?", "today the banks look pretty dirty, I wonder what happened", "The forest extends across the banks of the old river]
 
 
+
 """
