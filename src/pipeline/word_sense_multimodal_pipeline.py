@@ -150,10 +150,11 @@ class SparkWordSenseMultimodalPipeline(SparkWordSensePipeline):
             n_clusters = params.n_clusters
         )
         self.filters = filters
-        self.words = words
         # if no words given, default is all wordnet words
-        if self.words is None:
+        if words is None:
             self.words = set(list(wn.words()))
+        else:
+            self.words = set(words)
 
     def _title_contains_lemma(self, title_tokens: List[str]):
         for t in title_tokens:
@@ -161,15 +162,39 @@ class SparkWordSenseMultimodalPipeline(SparkWordSensePipeline):
                 return True
         return False
 
+    def _find_lemma_for_article(self, title_tokens):
+        for t in title_tokens:
+            if t in self.words:
+                return t 
+
+    def _cache_filter(self, filter_name, filter):
+        self.filters[filter_name] = filter
+
     def _filter_by_lemmas(self):
         """
         we wanna leave out all the articles that don't have the lemmas
         we are looking for in the title
         """
-        filter_by_lemma = self.filters["contains_lemma"] if "contains_lemma" in self.filters \
-            else udf(self._title_contains_lemma, BooleanType())
+        if "contains_lemma" in self.filters:
+            filter_by_lemma = self.filters["contains_lemma"]
+        else:
+           filter_by_lemma = udf(self._title_contains_lemma, BooleanType())
+           self._cache_filter("contains_lemma", filter_by_lemma)
+        self.data = self.data.filter(filter_by_lemma('title'))
 
-        self.data.filter(filter_by_lemma('title'))
+    def _filter_by_pos(self):
+        raise NotImplementedError()
+
+    def _filter_by_ner(self):
+        raise NotImplementedError()
+
+    def _map_article_to_lemma(self):
+        if "map_title_to_lemma" in self.filters:
+            map_title_to_lemma = self.filters["map_title_to_lemma"]
+        else:
+            map_title_to_lemma = udf(self._find_lemma_for_article, StringType()) 
+            self._cache_filter("map_title_to_lemma", map_title_to_lemma)
+        self.data = self.data.withColumn("title_lemma", udf('title'))
 
     def add_filter(self, name, function, return_type):
         self.filters[name] = udf(function, return_type)
