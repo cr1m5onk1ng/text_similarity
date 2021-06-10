@@ -119,6 +119,9 @@ import nltk
 from nltk.corpus import wordnet as wn
 nltk.download("wordnet")
 nltk.download("omw")
+from pyspark.sql import functions as F
+from pyspark.sql.types import ArrayType, StringType, BooleanType
+from pyspark.sql.functions import udf
 
 
 class SparkWordSenseMultimodalPipeline(SparkWordSensePipeline):
@@ -128,10 +131,13 @@ class SparkWordSenseMultimodalPipeline(SparkWordSensePipeline):
         2. Map words to possible synsets
         3. Map synsets to glosses
         4. Map words to articles
-        5. Filter articles titles based on POS (retain only nouns and verbs)
-        6. Filter articles titles based on NER (exclude places, institutions etc.)
+        5. Filter articles titles 
+            Pick articles that:
+            - contain the word exactly once
+            - contain the word as verb or noun
+            - contain the word, which doesn't refer to some person or institution
     """
-    def __init__(self, data, params, bi_encoder, cross_encoder,  *args, **kwargs):
+    def __init__(self, data, params, bi_encoder, cross_encoder, *args, words=None, filters={}, **kwargs):
         super().__init__(*args, **kwargs)
         self.data = data
         self.ranker = RankingPipeline(
@@ -143,9 +149,32 @@ class SparkWordSenseMultimodalPipeline(SparkWordSensePipeline):
             method = "k-means",
             n_clusters = params.n_clusters
         )
+        self.filters = filters
+        self.words = words
+        # if no words given, default is all wordnet words
+        if self.words is None:
+            self.words = set(list(wn.words()))
 
-    def _preprocess(self):
-        raise NotImplementedError()
+    def _title_contains_lemma(self, title_tokens: List[str]):
+        for t in title_tokens:
+            if t in self.words:
+                return True
+        return False
+
+    def _filter_by_lemmas(self):
+        """
+        we wanna leave out all the articles that don't have the lemmas
+        we are looking for in the title
+        """
+        filter_by_lemma = self.filters["contains_lemma"] if "contains_lemma" in self.filters \
+            else udf(self._title_contains_lemma, BooleanType())
+
+        self.data.filter(filter_by_lemma('title'))
+
+    def add_filter(self, name, function, return_type):
+        self.filters[name] = udf(function, return_type)
+
+
 
 
 

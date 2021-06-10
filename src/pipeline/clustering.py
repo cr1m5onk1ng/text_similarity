@@ -22,3 +22,6 @@ class ClusteringPipeline(Pipeline):
         for text_id, cluster_id in enumerate(clusters):
             results[cluster_id].append(corpus[text_id])
 
+    def set_n_clusters(self, n: int):
+        self.clusterer.n_clusters = n
+
