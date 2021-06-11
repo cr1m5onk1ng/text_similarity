@@ -7,7 +7,7 @@ from pyspark.ml import Transformer
 from pyspark.sql.functions import udf
 from pyspark.ml.param.shared import HasInputCol, HasOutputCol, Param
 from pyspark.ml.util import DefaultParamsReadable, DefaultParamsWritable, MLReadable, MLWritable
-from pyspark.sql.types import ArrayType, StringType
+from pyspark.sql.types import ArrayType, BooleanType, StringType
 from pyspark.sql import functions as F
 from sparknlp.pretrained import BertEmbeddings
 
@@ -116,43 +116,83 @@ class WordNetGlossTransformer(Transformer, HasInputCol, HasOutputCol, DefaultPar
         #return dataset.withColumn(out_col, F.explode(text2lemmas(in_col)))
         return dataset.withColumn(out_col, syn2gloss(in_col))
 
-import re
-class RestrictedVocabTransformer(Transformer, HasInputCol, HasOutputCol, DefaultParamsReadable, DefaultParamsWritable,
+
+class MapTitleToLemmaTransformer(Transformer, HasInputCol, HasOutputCol, DefaultParamsReadable, DefaultParamsWritable,
                                  MLReadable, MLWritable):
 
     @keyword_only
-    def __init__(self, inputCol=None, outputCol=None, restrictedVocabGoWords=None):
+    def __init__(self, inputCol=None, outputCol=None, lemmas=None):
         module = __import__("__main__")
-        setattr(module, 'RestrictedVocabTransformer', RestrictedVocabTransformer)
-        super(RestrictedVocabTransformer, self).__init__()
-        self.restrictedVocabGoWords = Param(self, "restrictedVocabGoWords", "")
-        self._setDefault(restrictedVocabGoWords={})
+        setattr(module, 'MapTitleToLemmaTransformer', MapTitleToLemmaTransformer)
+        super(MapTitleToLemmaTransformer, self).__init__()
+        self.lemmas = Param(self, "lemmas", "")
+        self._setDefault(lemmas=set())
         kwargs = self._input_kwargs
         self.setParams(**kwargs)
 
     @keyword_only
-    def setParams(self, inputCol=None, outputCol=None, restrictedVocabGoWords=None):
+    def setParams(self, inputCol=None, outputCol=None, lemmas=None):
         kwargs = self._input_kwargs
         return self._set(**kwargs)
 
-    def setRestrictedVocabGoWords(self, value):
-        self._paramMap[self.restrictedVocabGoWords] = value
+    def setLemmas(self, value):
+        self._paramMap[self.lemmas] = value
         return self
 
-    def getRestrictedVocabGoWords(self):
-        return self.getOrDefault(self.restrictedVocabGoWords)
+    def getLemmas(self):
+        return self.getOrDefault(self.lemmas)
 
     def _transform(self, dataset):
-        restricted_vocab_go_words = self.getRestrictedVocabGoWords()
+        lemmas = self.getlemmas()
 
-        # User defined function
-        t = StringType()
+        return_type = StringType()
 
-        def f(original_text):
-            tokens = re.split(r'(\W+)', original_text.lower())
-            restricted_vocab_tokens = [t for t in tokens if t in restricted_vocab_go_words]
-            return ' '.join(restricted_vocab_tokens)
+        def f(title_tokens):
+            for t in title_tokens:
+                if t in lemmas:
+                    return t
 
         out_col = self.getOutputCol()
         in_col = dataset[self.getInputCol()]
-        return dataset.withColumn(out_col, udf(f, t)(in_col))
+        return dataset.withColumn(out_col, udf(f, return_type)(in_col))
+
+
+class FilterArticlesByLemmaTransformer(Transformer, HasInputCol, HasOutputCol, DefaultParamsReadable, DefaultParamsWritable,
+                                 MLReadable, MLWritable):
+
+    @keyword_only
+    def __init__(self, inputCol=None, outputCol=None, lemmas=None):
+        module = __import__("__main__")
+        setattr(module, 'FilterArticlesByLemmaTransformer', FilterArticlesByLemmaTransformer)
+        super(FilterArticlesByLemmaTransformer, self).__init__()
+        self.lemmas = Param(self, "lemmas", "")
+        self._setDefault(lemmas=set())
+        kwargs = self._input_kwargs
+        self.setParams(**kwargs)
+
+    @keyword_only
+    def setParams(self, inputCol=None, outputCol=None, lemmas=None):
+        kwargs = self._input_kwargs
+        return self._set(**kwargs)
+
+    def setLemmas(self, value):
+        self._paramMap[self.lemmas] = value
+        return self
+
+    def getLemmas(self):
+        return self.getOrDefault(self.lemmas)
+
+    def _transform(self, dataset):
+        lemmas = self.getlemmas()
+
+        return_type = BooleanType()
+
+        def f(title_tokens):
+            for t in title_tokens:
+                if t in lemmas:
+                    return True
+            return False
+
+        out_col = self.getOutputCol()
+        in_col = dataset[self.getInputCol()]
+        return dataset.filter(udf(f, return_type)(in_col))

@@ -63,7 +63,7 @@ CLIP: https://arxiv.org/abs/2103.00020
     We want to build a dataset such that, for every (non-rare) word
     in WordNet, we have:
         1. A set of contexts in which the word appears IN ANY OF ITS POSSIBLE SENSES
-        2. A set of images related to those possible senses
+        2. A set of images related to the possible senses
 
     How we do it:
 
@@ -112,9 +112,10 @@ CLIP: https://arxiv.org/abs/2103.00020
 
 
 from typing import List, Union
-from .word_sense_pipeline import SparkWordSensePipeline
+from .word_sense_pipeline import SparkPipelineWrapper
 from .ranking_pipeline import RankingPipeline
 from .clustering import ClusteringPipeline
+from src.modules.pyspark_extensions import FilterArticlesByLemmaTransformer, MapTitleToLemmaTransformer
 import nltk
 from nltk.corpus import wordnet as wn
 nltk.download("wordnet")
@@ -122,9 +123,10 @@ nltk.download("omw")
 from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, StringType, BooleanType
 from pyspark.sql.functions import udf
+from sparknlp.annotator import WordEmbeddingsModel, PerceptronModel, NerDLModel
 
 
-class SparkWordSenseMultimodalPipeline(SparkWordSensePipeline):
+class SparkWordSenseMultimodalPipeline(SparkPipelineWrapper):
     """
     Preprocessing steps:
         1. Collect words of interest (default all WordNet non-rare words)
@@ -136,6 +138,12 @@ class SparkWordSenseMultimodalPipeline(SparkWordSensePipeline):
             - contain the word exactly once
             - contain the word as verb or noun
             - contain the word, which doesn't refer to some person or institution
+    At the end of the preprocessing step, we want to obtain a dataframe containing:
+        1. Articles titles
+        2. Articles description
+        3. WordNet lemma of the title
+        4. POS of the lemma
+        5. NER of the lemma
     """
     def __init__(self, data, params, bi_encoder, cross_encoder, *args, words=None, filters={}, **kwargs):
         super().__init__(*args, **kwargs)
@@ -156,45 +164,62 @@ class SparkWordSenseMultimodalPipeline(SparkWordSensePipeline):
         else:
             self.words = set(words)
 
-    def _title_contains_lemma(self, title_tokens: List[str]):
-        for t in title_tokens:
-            if t in self.words:
-                return True
-        return False
-
-    def _find_lemma_for_article(self, title_tokens):
-        for t in title_tokens:
-            if t in self.words:
-                return t 
-
     def _cache_filter(self, filter_name, filter):
         self.filters[filter_name] = filter
 
-    def _filter_by_lemmas(self):
+    def _add_lemma_filter(self, input_col):
         """
         we wanna leave out all the articles that don't have the lemmas
         we are looking for in the title
         """
-        if "contains_lemma" in self.filters:
-            filter_by_lemma = self.filters["contains_lemma"]
-        else:
-           filter_by_lemma = udf(self._title_contains_lemma, BooleanType())
-           self._cache_filter("contains_lemma", filter_by_lemma)
-        self.data = self.data.filter(filter_by_lemma('title'))
+        self.add_annotator(
+            FilterArticlesByLemmaTransformer \
+                .setInputCol(input_col) \
+                .setLemmas(self.words)
+        )
 
-    def _filter_by_pos(self):
+    def _add_pos(self, pos_model, input_cols, output_col):
+        self.add_annotators(
+            [
+                PerceptronModel.pretrained(pos_model) \
+                    .setInputCols(input_cols) \
+                    .setOutputCol(output_col)
+            ]
+        )
+
+    def _add_embeddings(self, embed_model, input_cols, output_col):
+        self.add_annotators(
+            [
+                WordEmbeddingsModel.pretrained(embed_model) \
+                    .setInputCols(input_cols) \
+                    .setOutputCol(output_col)
+            ]
+        )
+
+    def _add_ner(self, ner_model, input_cols, output_col):
+        self.add_annotators(
+            [
+                NerDLModel.pretrained(ner_model) \
+                    .setInputCols(input_cols) \
+                    .setOutputCol(output_col)
+            ]
+        )
+
+    def _map_article_to_lemma(self, input_col, output_col):
+        self.add_annotators(
+            [
+                MapTitleToLemmaTransformer() \
+                    .setInputCol(input_col) \
+                    .setOutputCol(output_col) \
+                    .setLemmas(self.words)
+            ]
+        )
+
+    def filter_by_pos(self, pos_tags):
         raise NotImplementedError()
 
-    def _filter_by_ner(self):
+    def filter_by_ner(self, ner_tags):
         raise NotImplementedError()
-
-    def _map_article_to_lemma(self):
-        if "map_title_to_lemma" in self.filters:
-            map_title_to_lemma = self.filters["map_title_to_lemma"]
-        else:
-            map_title_to_lemma = udf(self._find_lemma_for_article, StringType()) 
-            self._cache_filter("map_title_to_lemma", map_title_to_lemma)
-        self.data = self.data.withColumn("title_lemma", udf('title'))
 
     def add_filter(self, name, function, return_type):
         self.filters[name] = udf(function, return_type)

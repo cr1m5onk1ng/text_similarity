@@ -75,40 +75,20 @@ from src.modules.pyspark_extensions import (
 )
 
 
-@dataclass
-class WnSynset():
-  name: str # the wn key
-  lemmas: List[str]  
-  gloss: str
-
-  def __eq__(self, other):
-    return self.name == other.name
-
-@dataclass
-class WnLemma():
-  name: str #the lemma wn key
-  synset: str #the synset its part of
-  #embedding: Optional[Union[torch.Tensor, np.array]] = None
-
-  def __eq__(self, other):
-    return self.name == other.name
-
-def get_all_wn_words() -> List[str]:
-    return wn.words(lang="jpn")
-
-class SparkWordSensePipeline():
-  def __init__(self, annotators: list, stages: dict = {}):
+class SparkPipelineWrapper():
+  def __init__(self, data, annotators: list, pipes: dict = {}):
     """
     params:
       :annotators list of pyspark annotators that make up a pipeline
       :stages collection of pipelines that need to be applied sequentially
     """
-    self.annotators = annotators
-    self.models = []
-    self.stages = stages 
+    self.data = data
+    self.annotators = {i: ann for i, ann in enumerate(annotators)}
+    self.models = {}
+    self.pipes = pipes 
 
   @classmethod
-  def from_annotators(cls, annotators):
+  def from_annotators(cls, data, annotators):
     """
     Builds a PySpark pipeline to prepare the text for
     sense embeddings creation. Covers steps from 1 to 3
@@ -151,36 +131,69 @@ class SparkWordSensePipeline():
       ]
 
     pipeline = Pipeline(stages=[*annotators])
-    stages = {"default": pipeline}
+    pipes = {"default": pipeline}
 
-    return cls(annotators, stages)
+    return cls(data, annotators, pipes)
 
-  def _check_stage_already_present(self, stage_id: str):
-    if stage_id in self.stages:
+  def _check_pipeline_already_present(self, pipe_id: str):
+    if pipe_id in self.pipes:
       raise Exception("stage already present in the pipeline")
 
-  def _check_state_not_present(self, stage_id: str):
-    if stage_id not in self.stages:
+  def _check_pipeline_not_present(self, pipe_id: str):
+    if pipe_id not in self.pipes:
       raise Exception("stage already present in the pipeline")
     
-  def add_stage(self, stage_id: str, pipeline: Pipeline):
-    self._check_stage_already_present(stage_id)
-    self.stages[stage_id] = pipeline
+  def add_pipeline(self, pipe_id: str, pipeline: Pipeline):
+    self._check_pipeline_already_present(pipe_id)
+    self.pipes[pipe_id] = pipeline
 
-  def fit(self, data, stage_id=None):
-    if stage_id is None:
-      stage_id = "default"
-    self._check_state_not_present(stage_id)
-    self.models.append(self.stages[stage_id].fit(data))
+  def add_annotators(self, annotators, before=None, after=None):
+    last_index = max(self.annotators.keys())
+    if not isinstance(annotators, list):
+      annotators = [annotators]
+    new_index = last_index + 1
+    for annotator in annotators:
+      self.annotators[new_index] = annotator
+      new_index += 1
+
+  def fit(self, data, pipe_id=None):
+    if pipe_id is None:
+      pipe_id = "default"
+    self._check_state_not_present(pipe_id)
+    self.models[pipe_id] = self.pipes[pipe_id].fit(data)
 
   def fit_all(self, data):
-    for pipe in self.stages.values():
-      self.models.append(pipe.fit(data))
+    for pipe_id, pipe in self.pipes.items():
+      self.models[pipe_id] = pipe.fit(data)
 
-  def transform(self, stage_id, data):
-    self._check_state_not_present(stage_id)
-    self.stages[stage_id].transform(data)
+  def transform(self, pipe_id, data):
+    self._check_state_not_present(pipe_id)
+    return self.pipes[pipe_id].transform(data)
     
+
+
+
+@dataclass
+class WnSynset():
+  name: str # the wn key
+  lemmas: List[str]  
+  gloss: str
+
+  def __eq__(self, other):
+    return self.name == other.name
+
+@dataclass
+class WnLemma():
+  name: str #the lemma wn key
+  synset: str #the synset its part of
+  #embedding: Optional[Union[torch.Tensor, np.array]] = None
+
+  def __eq__(self, other):
+    return self.name == other.name
+
+def get_all_wn_words() -> List[str]:
+    return wn.words(lang="jpn")
+
 
 class WordSenseProcessingPipeline():
   """
