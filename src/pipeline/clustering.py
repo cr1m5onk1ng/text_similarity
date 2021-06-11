@@ -25,3 +25,8 @@ class ClusteringPipeline(Pipeline):
     def set_n_clusters(self, n: int):
         self.clusterer.n_clusters = n
 
+
+    def __call__(self, embeddings, n_clusters):
+        self.set_n_clusters(n_clusters)
+        return self._cluster(embeddings)
+
