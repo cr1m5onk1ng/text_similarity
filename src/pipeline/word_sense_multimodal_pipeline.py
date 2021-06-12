@@ -123,7 +123,8 @@ nltk.download("omw")
 from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, StringType, BooleanType
 from pyspark.sql.functions import udf
-from sparknlp.annotator import WordEmbeddingsModel, PerceptronModel, NerDLModel
+from sparknlp.annotator import WordEmbeddingsModel, PerceptronModel, NerDLModel, TextMatcher
+import os
 
 
 class SparkWordSenseMultimodalPipeline(SparkPipelineWrapper):
@@ -167,21 +168,39 @@ class SparkWordSenseMultimodalPipeline(SparkPipelineWrapper):
     def _cache_filter(self, filter_name, filter):
         self.filters[filter_name] = filter
 
-    def _add_lemma_filter(self, input_col):
+    def _write_lemmas(self, filepath, name="lemmas.txt"):
+        if not os.path.exists(filepath):
+            os.makedirs(filepath)
+        with open(os.path.join(filepath, name), 'w') as f:
+            for lemma in self.words:
+                f.write(lemma + '\n')
+
+    def _add_lemma_filter(self, input_col, use_matcher=False, lemmas_path=None):
         """
         we wanna leave out all the articles that don't have the lemmas
         we are looking for in the title
         """
-        self.add_annotator(
-            FilterArticlesByLemmaTransformer \
+        if use_matcher:
+            if lemmas_path is None:
+                raise Exception("No file specified for the lemmas")
+            if not os.path.exists(lemmas_path):
+                self._write_lemmas(lemmas_path)
+            annotator = TextMatcher() \
+                .setInputCols(["document",'token']) \
+                .setOutputCol("matched_text") \
+                .setCaseSensitive(False) \
+                .setEntities(path=os.path.join(lemmas_path, "lemmas.txt"))
+        else:
+            annotator = FilterArticlesByLemmaTransformer \
                 .setInputCol(input_col) \
                 .setLemmas(self.words)
-        )
 
-    def _add_pos(self, pos_model, input_cols, output_col):
+        self.add_annotator(annotator)
+
+    def _add_pos(self, pos_model, input_cols, output_col, lang="en"):
         self.add_annotators(
             [
-                PerceptronModel.pretrained(pos_model) \
+                PerceptronModel.pretrained(pos_model, lang) \
                     .setInputCols(input_cols) \
                     .setOutputCol(output_col)
             ]
