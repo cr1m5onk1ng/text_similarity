@@ -236,13 +236,13 @@ class SparkWordSenseMultimodalPipeline(SparkPipelineWrapper):
     def add_filter(self, name, function, return_type):
         self.filters[name] = udf(function, return_type)
 
-    def filter_by_pos(self):
+    def filter_by_pos(self, pos_col, lemma_col):
         self.data = self.data.withColumn('cols', 
                   F.explode(
                       F.arrays_zip(
-                          'pos.result',
-                          'pos.begin',
-                          'token.begin',
+                          pos_col + '.result',
+                          pos_col + '.begin',
+                          lemma_col + '.begin',
                       ) 
                   )
         ) \
@@ -252,13 +252,13 @@ class SparkWordSenseMultimodalPipeline(SparkPipelineWrapper):
         .filter((F.col('pos_result') == 'NN') & (F.col('pos_begin') == F.col('token_begin'))) \
         .drop("cols", "pos_result", "pos_begin", "token_begin")
 
-    def filter_by_ner(self, column):
+    def filter_by_ner(self, ner_col, lemma_col):
         self.data = self.data.withColumn('cols', 
                   F.explode(
                       F.arrays_zip(
-                          'ner.result',
-                          'ner.begin',
-                          'token.begin',
+                          ner_col + '.result',
+                          ner_col + '.begin',
+                          lemma_col + '.begin',
                       ) 
                   )
         ) \
