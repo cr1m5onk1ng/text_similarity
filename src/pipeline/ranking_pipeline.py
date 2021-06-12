@@ -16,7 +16,7 @@ class RankingPipeline(SentenceMiningPipeline):
         #Encode the query using the bi-encoder and find potentially relevant passages
         results = []
         if search_first:
-            query_embeddings = self.model.encode_text(queries, convert_to_tensor=True)
+            query_embeddings = self.model.encode(queries, convert_to_tensor=True)
             query_embeddings = query_embeddings.cuda()
             hits = self._search(query_embeddings, corpus, max_num_results=top_k)
             hits = hits[0]  # Get the hits for the first query

@@ -130,14 +130,8 @@ class SentenceTransformerWrapper(BaseEncoderModel):
                return output, model_output
         return output
 
-    def encode(self, features: EmbeddingsFeatures, return_output=False, **kwargs) -> torch.Tensor:
-        output = self.context_embedder(**features.to_dict(), output_attentions=return_output, output_hidden_states=return_output)
-        pooled = self.pooler(output[0], features)
-        if hasattr(self, "projection"):
-            pooled = self.projection(pooled)
-        if return_output:
-            return pooled, output
-        return pooled
+    def encode(self, documents: List[str], output_np: bool=False) -> Union[torch.Tensor, np.array]:
+        return self.encode_text(documents, output_np)
 
     def encode_text(self, documents: List[str], output_np: bool=False) -> Union[torch.Tensor, np.array]:
         self.to(self.params.device)

@@ -16,8 +16,8 @@ CLIP: https://arxiv.org/abs/2103.00020
 ##   For every word w in WordNet, we want to build a dataset that maps w
 ##   to a set of images and sentences related to w
 ##   - For every word w in WordNet, search for wikipedia pages related to the word and scrape
-##     a maximum N number of images, their captions, and a maximun M number of sentences 
-##     in the article containing the word or any of its lemmas
+##     a maximum N number of images, the article description (first paragraph of first section) 
+##     and a maximun M number of sentences in the article containing the word or any of its lemmas
 ##   - Finding related pages: Several strategies are possible:
 ##     1. Use a massive dataset such as WIT
 ##        * Find all the articles in the dataset that contain the word w in their title
@@ -113,8 +113,8 @@ CLIP: https://arxiv.org/abs/2103.00020
 
 from typing import List, Union
 from .word_sense_pipeline import SparkPipelineWrapper
-from .ranking_pipeline import RankingPipeline
-from .clustering import ClusteringPipeline
+from ..ranking_pipeline import RankingPipeline
+from ..clustering import ClusteringPipeline
 from src.modules.pyspark_extensions import FilterArticlesByLemmaTransformer, MapTitleToLemmaTransformer
 import nltk
 from nltk.corpus import wordnet as wn
@@ -133,15 +133,14 @@ class SparkWordSenseMultimodalPipeline(SparkPipelineWrapper):
         1. Collect words of interest (default all WordNet non-rare words)
         2. Map words to possible synsets
         3. Map synsets to glosses
-        4. Map words to articles
-        5. Filter articles titles 
+        4. Filter articles titles 
             Pick articles that:
             - contain the word exactly once
             - contain the word as verb or noun
-            - contain the word, which doesn't refer to some person or institution
+            - contain the word, which doesn't refer to some specific entity 
     At the end of the preprocessing step, we want to obtain a dataframe containing:
-        1. Articles titles
-        2. Articles description
+        1. Articles titles (+url)
+        2. Articles description 
         3. WordNet lemma of the title
         4. POS of the lemma
         5. NER of the lemma
@@ -233,15 +232,43 @@ class SparkWordSenseMultimodalPipeline(SparkPipelineWrapper):
                     .setLemmas(self.words)
             ]
         )
-
-    def filter_by_pos(self, pos_tags):
-        raise NotImplementedError()
-
-    def filter_by_ner(self, ner_tags):
-        raise NotImplementedError()
-
+    
     def add_filter(self, name, function, return_type):
         self.filters[name] = udf(function, return_type)
+
+    def filter_by_pos(self):
+        self.data = self.data.withColumn('cols', 
+                  F.explode(
+                      F.arrays_zip(
+                          'pos.result',
+                          'pos.begin',
+                          'token.begin',
+                      ) 
+                  )
+        ) \
+        .withColumn("pos_result", F.expr("cols['0']")) \
+        .withColumn("pos_begin", F.expr("cols['1']")) \
+        .withColumn("token_begin", F.expr("cols['2']")) \
+        .filter((F.col('pos_result') == 'NN') & (F.col('pos_begin') == F.col('token_begin'))) \
+        .drop("cols", "pos_result", "pos_begin", "token_begin")
+
+    def filter_by_ner(self, column):
+        self.data = self.data.withColumn('cols', 
+                  F.explode(
+                      F.arrays_zip(
+                          'ner.result',
+                          'ner.begin',
+                          'token.begin',
+                      ) 
+                  )
+        ) \
+        .withColumn("ner_result", F.expr("cols['0']")) \
+        .withColumn("ner_begin", F.expr("cols['1']")) \
+        .withColumn("token_begin", F.expr("cols['2']")) \
+        .filter((F.col('ner_result') == 'O') & (F.col('ner_begin') == F.col('token_begin'))) \
+        .drop("cols", "ner_result", "ner_begin", "token_begin")
+
+    
 
 
 
