@@ -25,7 +25,7 @@ which offers a wide variety of options for very performant sentence embeddings m
 5. Scripts to train models on a variety of text similarity and sequence classification tasks
 
 ## Work in Progress
-- [ ] [Sense-aware embeddings](https://github.com/cr1m5onk1ng/text_similarity/pipeline/word_sense) creation exploiting WordNet relations and contextualised embeddings
+- [ ] [Sense-aware embeddings](https://github.com/cr1m5onk1ng/text_similarity/tree/master/src/pipeline/word_sense) creation exploiting WordNet relations and contextualised embeddings
 - [ ] PySpark integration for faster text preprocessing for larger datasets
 
 ## Author
