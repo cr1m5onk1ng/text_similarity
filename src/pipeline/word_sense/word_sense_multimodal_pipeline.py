@@ -237,34 +237,42 @@ class SparkWordSenseMultimodalPipeline(SparkPipelineWrapper):
         self.filters[name] = udf(function, return_type)
 
     def filter_by_pos(self, pos_col, lemma_col):
-        self.data = self.data.withColumn('cols', 
-                  F.explode(
-                      F.arrays_zip(
-                          pos_col + '.result',
-                          pos_col + '.begin',
-                          lemma_col + '.begin',
-                      ) 
-                  )
+        self.data = self.data.select(
+                F.expr("*"), 
+                F.explode(
+                    F.arrays_zip(
+                        pos_col + '.result',
+                        pos_col + '.begin',
+                        lemma_col + '.begin',
+                    ) 
+                ).alias("cols")
         ) \
-        .withColumn("pos_result", F.expr("cols['0']")) \
-        .withColumn("pos_begin", F.expr("cols['1']")) \
-        .withColumn("token_begin", F.expr("cols['2']")) \
+        .select(
+            F.expr('*'),
+            F.expr("cols['0']").alias("pos_result"),
+            F.expr("cols['1']").alias("pos_begin"),
+            F.expr("cols['2']").alias("token_begin")
+        ) \
         .filter((F.col('pos_result') == 'NN') & (F.col('pos_begin') == F.col('token_begin'))) \
         .drop("cols", "pos_result", "pos_begin", "token_begin")
 
     def filter_by_ner(self, ner_col, lemma_col):
-        self.data = self.data.withColumn('cols', 
-                  F.explode(
-                      F.arrays_zip(
-                          ner_col + '.result',
-                          ner_col + '.begin',
-                          lemma_col + '.begin',
-                      ) 
-                  )
+        self.data = self.data.select(
+                F.expr("*"), 
+                F.explode(
+                    F.arrays_zip(
+                        ner_col + '.result',
+                        ner_col + '.begin',
+                        lemma_col + '.begin',
+                    ).alias("cols")
+                )
         ) \
-        .withColumn("ner_result", F.expr("cols['0']")) \
-        .withColumn("ner_begin", F.expr("cols['1']")) \
-        .withColumn("token_begin", F.expr("cols['2']")) \
+        .select(
+            F.expr('*'),
+            F.expr("cols['0']").alias("ner_result"),
+            F.expr("cols['1']").alias("ner_begin"),
+            F.expr("cols['2']").alias("token_begin")
+        ) \
         .filter((F.col('ner_result') == 'O') & (F.col('ner_begin') == F.col('token_begin'))) \
         .drop("cols", "ner_result", "ner_begin", "token_begin")
 
