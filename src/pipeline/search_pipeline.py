@@ -16,9 +16,9 @@ class Pipeline:
         self.params = params
         self.model = model
 
-    def encode_corpus(self, documents: Union[List[str], torch.Tensor], convert_to_numpy=False) -> Union[List[str], torch.Tensor]:
+    def encode_corpus(self, documents: Union[List[str], torch.Tensor], convert_to_numpy=False, parallel=False) -> Union[List[str], torch.Tensor]:
         if isinstance(documents, list):
-            return self.model.encode_text(documents, output_np=convert_to_numpy)
+            return self.model.encode(documents, output_np=convert_to_numpy, parallel=parallel)
         return documents
 
 class SearchPipeline(Pipeline):
@@ -126,7 +126,8 @@ class SemanticSearchPipeline(SearchPipeline):
     def _search(
         self, 
         queries: Union[List[str], torch.Tensor], 
-        max_num_results: int) -> Dict[int, List[str]]:
+        max_num_results: int,
+        parallel=False) -> Dict[int, List[str]]:
 
         assert max_num_results < self.params.ef, "ef hyperparam should less than the maximun number of results"
 
@@ -147,9 +148,10 @@ class SemanticSearchPipeline(SearchPipeline):
     def __call__(
         self,
         queries: Union[List[str], torch.Tensor], 
-        max_num_results: int):
+        max_num_results: int,
+        parallel=False):
 
-        return self._search(queries, max_num_results)
+        return self._search(queries, max_num_results, parallel=parallel)
 
     def add_to_index(self, text: Union[str, List[str]]):
         embeddings = self.encode_corpus(text, convert_to_numpy=True)
@@ -174,56 +176,6 @@ class SemanticSearchPipeline(SearchPipeline):
         """
         return self.index.get_current_count() - self.params.num_removed
 
-
-class APISearchPipeline(SemanticSearchPipeline):
-    def __init__(
-        self, 
-        params,
-        max_n_results: int, 
-        *args, 
-        inference_mode: bool=True, 
-        session_options: bool=None,
-        **kwargs):
-        super().__init__(*args, **kwargs)
-        self.params = params
-        self.inference_mode = inference_mode
-        self.sess_options = session_options
-        self.max_n_results = max_n_results
-        if self.sess_options is None:
-            self.sess_options = onnxruntime.SessionOptions()
-        self.session = onnxruntime.InferenceSession(self.params.model_path, self.sess_options)
-
-    def __call__(
-        self,
-        queries: Union[List[str], torch.Tensor], 
-        max_num_results: int):
-        return self._search(queries, max_num_results)
-       
-    def encode_corpus(self, documents: List[str]) -> Union[torch.Tensor, np.array]:
-        length_sorted_idx = np.argsort([len(sen) for sen in documents])
-        documents = [documents[idx] for idx in length_sorted_idx]
-        encoded_documents = []
-        for start_index in trange(0, len(documents), self.params.batch_size):
-            sentences_batch = documents[start_index:start_index+self.params.batch_size]   
-            encoded_dict = self.params.tokenizer(
-                    text=sentences_batch,
-                    add_special_tokens=True,
-                    padding='longest',
-                    truncation=True,
-                    max_length=self.params.sequence_max_len,
-                    return_attention_mask=True,
-                    return_token_type_ids=False,
-                    return_tensors='np'
-            )
-            inputs = {
-            'input_ids': encoded_dict["input_ids"].reshape(1, -1),
-            'attention_mask': encoded_dict["attention_mask"].reshape(1, -1),
-            }
-            output = self.session.run(None, inputs)
-            embeddings = output[0]
-            encoded_documents.extend(embeddings)
-        encoded_documents = [encoded_documents[idx] for idx in np.argsort(length_sorted_idx)]
-        return encoded_documents
      
 
     

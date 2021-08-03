@@ -11,6 +11,9 @@ from transformers import AutoModel
 import transformers
 import numpy as np
 import os
+import dask
+from dask import delayed
+import onnxruntime
 
 
 
@@ -22,12 +25,16 @@ class OnnxSentenceTransformerWrapper(BaseEncoderModel):
 
     :param projection_dim: The dimension of the projection matrix, applied in the case we want to reduce the size of the output embeddings 
     """
-    def __init__(self, *args, projection: nn.Module=None,  **kwargs):
+    def __init__(self, *args, projection: nn.Module=None, session_options: bool=None, **kwargs):
         super().__init__(*args, **kwargs)
         if projection is None:
             self.projection = nn.Identity()
         else:
             self.projection = projection
+        self.session_options = session_options
+        if self.session_options is None:
+            self.session_options = onnxruntime.SessionOptions()
+        self.session = onnxruntime.InferenceSession(self.params.model_path, self.sess_options)
 
     def forward(self, input_ids, attention_mask, **kwargs):
         token_embeddings = self.context_embedder(input_ids=input_ids, attention_mask=attention_mask, **kwargs)[0]
@@ -37,6 +44,39 @@ class OnnxSentenceTransformerWrapper(BaseEncoderModel):
         sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
         pooled = sum_embeddings / sum_mask
         return pooled
+
+    def _encode_batch(self, batch):
+        encoded_dict = self.params.tokenizer(
+            text=batch,
+            add_special_tokens=True,
+            padding='longest',
+            truncation=True,
+            max_length=self.params.sequence_max_len,
+            return_attention_mask=True,
+            return_token_type_ids=False,
+            return_tensors='np'
+        )
+        inputs = {
+        'input_ids': encoded_dict["input_ids"].reshape(1, -1),
+        'attention_mask': encoded_dict["attention_mask"].reshape(1, -1),
+        }
+        output = self.session.run(None, inputs)
+        embeddings = output[0]
+        return embeddings
+
+    def encode(self, documents: List[str], parallel=False) -> Union[torch.Tensor, np.array]:
+        length_sorted_idx = np.argsort([len(sen) for sen in documents])
+        documents = [documents[idx] for idx in length_sorted_idx]
+        encoded_documents = []
+        for start_index in trange(0, len(documents), self.params.batch_size):
+            sentences_batch = documents[start_index:start_index+self.params.batch_size]   
+            if parallel:
+                encoded_documents.extend(delayed(self._encode_batch)(sentences_batch))
+            else:
+                encoded_documents.extend(self._encode_batch(sentences_batch))
+        encoded_documents = [encoded_documents[idx] for idx in np.argsort(length_sorted_idx)]
+        return encoded_documents
+     
 
     @classmethod
     def from_pretrained(cls, path, projection: nn.Module=None, params: Configuration=None):
@@ -130,46 +170,60 @@ class SentenceTransformerWrapper(BaseEncoderModel):
                return output, model_output
         return output
 
-    def encode(self, documents: List[str], output_np: bool=False) -> Union[torch.Tensor, np.array]:
-        return self.encode_text(documents, output_np)
+    def encode(self, documents: List[str], output_np: bool=False, parallel=False) -> Union[torch.Tensor, np.array]:
+        if parallel:
+            return delayed(self._encode_text)(documents, output_np, parallel=parallel)
+        return self._encode_text(documents, output_np)
 
-    def encode_text(self, documents: List[str], output_np: bool=False) -> Union[torch.Tensor, np.array]:
-        self.to(self.params.device)
+    def _encode_batch(self, batch, output_np=False):
+        encoded_dict = self.params.tokenizer(
+                text=batch,
+                add_special_tokens=True,
+                padding='longest',
+                truncation=True,
+                max_length=self.params.sequence_max_len,
+                return_attention_mask=True,
+                return_token_type_ids=False,
+                return_tensors='pt'
+        )
+        input_ids = encoded_dict["input_ids"].to(self.params.device)
+        attention_mask = encoded_dict["attention_mask"].to(self.params.device)
+        features = EmbeddingsFeatures(
+            input_ids=input_ids, 
+            attention_mask=attention_mask, 
+        )
+        with torch.no_grad():
+            embeddings = self.forward(features, parallel_mode=False)
+        embeddings = embeddings.detach()
+
+        if output_np:
+            embeddings = embeddings.cpu()
+
+        return embeddings
+
+    def _encode_text(self, documents: List[str], output_np: bool=False, parallel=False) -> Union[torch.Tensor, np.array]:
+        if parallel:
+            self = delayed(self.cpu())
+        else:
+            self.to(self.params.device)
         length_sorted_idx = np.argsort([len(sen) for sen in documents])
         documents = [documents[idx] for idx in length_sorted_idx]
         encoded_documents = []
         self.eval()
         for start_index in trange(0, len(documents), self.params.batch_size):
             sentences_batch = documents[start_index:start_index+self.params.batch_size]   
-            encoded_dict = self.params.tokenizer(
-                    text=sentences_batch,
-                    add_special_tokens=True,
-                    padding='longest',
-                    truncation=True,
-                    max_length=self.params.sequence_max_len,
-                    return_attention_mask=True,
-                    return_token_type_ids=False,
-                    return_tensors='pt'
-            )
-            input_ids = encoded_dict["input_ids"].to(self.params.device)
-            attention_mask = encoded_dict["attention_mask"].to(self.params.device)
-            features = EmbeddingsFeatures(
-                input_ids=input_ids, 
-                attention_mask=attention_mask, 
-            )
-            with torch.no_grad():
-                embeddings = self.encode(features, parallel_mode=False)
-            embeddings = embeddings.detach()
-
-            if output_np:
-                embeddings = embeddings.cpu()
-
+            if parallel:
+                embeddings = delayed(self._encode_batch)(sentences_batch, output_np=output_np)
+            else:
+                embeddings = self._encode_batch(sentences_batch, output_np=output_np)
             encoded_documents.extend(embeddings)
         encoded_documents = [encoded_documents[idx] for idx in np.argsort(length_sorted_idx)]
         
         if output_np:
             encoded_documents = np.asarray([embedding.numpy() for embedding in encoded_documents])
             return encoded_documents
+        if parallel:
+            return torch.stack(dask.compute(*encoded_documents))
         return torch.stack(encoded_documents)
     
     def get_sentence_embedding_dimension(self):

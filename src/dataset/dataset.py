@@ -1,3 +1,4 @@
+from pickle import load
 from nltk import tag
 from sentence_transformers.SentenceTransformer import SentenceTransformer
 from torch.cuda import current_blas_handle
@@ -599,7 +600,7 @@ class SmartParaphraseDataloader(DataLoader):
         return batches
     
     @staticmethod
-    def smart_batching_standard(sorted_dataset, batch_size, config, sentence_pairs=False, sbert_format=False):
+    def smart_batching_standard(sorted_dataset, batch_size, config, sentence_pairs=False):
         batches = []
         dataset = sorted_dataset
         while len(dataset) > 0:
@@ -805,3 +806,90 @@ class SmartParaphraseDataloader(DataLoader):
 
         return batches
 
+import dask
+from dask import delayed
+import dask.dataframe as dd
+import toolz
+
+class DataTransformation():
+    def __init__(self, tranformation_funtion):
+        self.transform = tranformation_funtion
+
+    def __call__(self, data) -> DataFeatures:
+        return delayed(self.transform)(data)
+
+
+class DaskDataset():
+    def __init__(self, examples: Union[list, dask.dataframe]):
+        self.examples = examples
+
+    def __getitem__(self, i):
+        return self.examples[i]
+
+    def __len__(self):
+        return len(self.examples)
+    
+    @classmethod
+    def from_files(cls, paths: List[str], mapping_function, fs=__builtins__) -> DaskDataset:
+        @delayed
+        def load_from_path(path, mapping_function):
+            with fs.open(path, 'r') as f:
+                return delayed(mapping_function)(f)
+
+        processed_samples = []
+        for path in paths:
+            processed_samples.extend(load_from_path(path, mapping_function))
+        return cls(dask.compute(processed_samples))
+
+    @classmethod
+    def from_csv(cls, paths: List[str], transform_fn, dtypes: dict=None):
+        processed_samples = []
+        for path in paths:
+            df = delayed(dd.read_csv)(path, dtype=dtypes)
+            processed_samples.extend(delayed(transform_fn)(df))
+        return cls(dask.compute(processed_samples))
+
+
+class DaskDataLoader():
+    def __init__(
+        self, 
+        dask_dataset, 
+        batch_size, 
+        transformations: List[DataTransformation], 
+        shuffle=False, 
+        smart_batching=True,
+        sorting_key = None
+        ):
+        self.data = dask_dataset
+        self.batch_size = batch_size
+        self.transformations = transformations
+        self.shuffle = shuffle
+        self.smart_batching = smart_batching
+        self.sorting_key = sorting_key
+
+    def _batch_data(self) -> DataFeatures:
+        if isinstance(self.data, dask.dataframe):
+            fraction = self.batch_size / len(self.data)
+            num_batches = len(self.data) // self.batch_size
+            while True:
+                yield self.data.sample(frac=fraction).compute()
+                num_batches -= 1
+                if num_batches <= 0:
+                    break
+        else:
+            for data_fraction in toolz.partition_all(self.batch_size, self.data):
+                for t in self.transformations:
+                    data_fraction = t(data_fraction)
+                yield dask.compute(data_fraction)
+
+    def __iter__(self):
+        if self.shuffle:
+            random.shuffle(self.data)
+        if self.smart_batching:
+            assert self.sorting_key is not None, "You must provide a sorting key if using smart batching"
+            self.data = sorted(self.data, key=self.sorting_key)
+        return self._batch_data()
+
+    def __len__(self):
+        return len(self.data) // self.batch_size
+    

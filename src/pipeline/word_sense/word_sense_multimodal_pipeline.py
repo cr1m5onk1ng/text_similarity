@@ -121,7 +121,7 @@ from nltk.corpus import wordnet as wn
 nltk.download("wordnet")
 nltk.download("omw")
 from pyspark.sql import functions as F
-from pyspark.sql.types import ArrayType, StringType, BooleanType
+from pyspark.sql import types as T
 from pyspark.sql.functions import udf
 from sparknlp.annotator import WordEmbeddingsModel, PerceptronModel, NerDLModel, TextMatcher
 import os
@@ -176,7 +176,7 @@ class SparkWordSenseMultimodalPipeline(SparkPipelineWrapper):
 
     def _add_lemma_filter(self, input_col, use_matcher=False, lemmas_path=None):
         """
-        we wanna leave out all the articles that don't have the lemmas
+        we want to leave out all the articles that don't have the lemmas
         we are looking for in the title
         """
         if use_matcher:
@@ -193,7 +193,6 @@ class SparkWordSenseMultimodalPipeline(SparkPipelineWrapper):
             annotator = FilterArticlesByLemmaTransformer \
                 .setInputCol(input_col) \
                 .setLemmas(self.words)
-
         self.add_annotator(annotator)
 
     def _add_pos(self, pos_model, input_cols, output_col, lang="en"):

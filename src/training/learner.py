@@ -11,6 +11,7 @@ from transformers.optimization import AdamW
 from transformers import get_linear_schedule_with_warmup
 from typing import Union, Dict, List
 import numpy as np
+from dask import delayed
 
 
 class Learner:
@@ -29,6 +30,7 @@ class Learner:
         metrics: Union[Dict[str, List[AverageMeter]], None] = None,
         verbose: bool = True,
         replacing_rate_scheduler = None,
+        as_dask_worker: bool = False
     ):
         self.params = params
         self.config_name = config_name
@@ -50,6 +52,9 @@ class Learner:
         self.optimizer = Learner.set_up_optimizer(self.model, self.params.lr)
         self.scheduler = Learner.set_up_scheduler(self.optimizer, self.steps, self.warm_up_steps)
         self.replacing_rate_scheduler = replacing_rate_scheduler
+        self.as_dask_worker = as_dask_worker
+        if self.as_dask_worker:
+            self.device = "cpu"
     @staticmethod
     def set_up_optimizer(model, lr):
         param_optimizer = list(model.named_parameters())
@@ -183,7 +188,107 @@ class Learner:
                    data[k] = data[k].to(device)   
         else:
             data.to(device) 
+
+    def _train_step(self, batch, b_idx, meters, losses, iterator):
+        self.to_device(batch, self.params.device)
+        skip_scheduler = False
+        if self.use_tpu:
+            loss, logits = self._tpu_step(batch, b_idx)
+        elif self.fp16:
+            loss, logits, scale_before_step = self.mixed_precision_step(batch, b_idx)
+            skip_scheduler = self.scaler.get_scale() != scale_before_step
+        else:
+            loss, logits = self.step(batch, b_idx)
+
+        if (b_idx + 1) % self.accumulation_steps == 0:
+            self.optimizer.zero_grad()
         
+        if self.scheduler is not None:
+            if not skip_scheduler:
+                self.scheduler.step()
+        if self.replacing_rate_scheduler is not None:
+            self.replacing_rate_scheduler.step()
+    
+        losses.update(loss.item(), self.params.batch_size)
+        if meters is not None:
+            if isinstance(batch, dict):
+                labels = batch["labels"].cpu().numpy()
+            else:
+                labels = batch.labels.cpu().numpy()
+            if logits is not None:
+                logits = logits.detach().cpu().numpy()
+                for m in meters.metrics:
+                    m.update(logits, labels, n=self.params.batch_size)
+            if not self.use_tpu:
+                iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+        if not self.use_tpu:
+            if meters is not None:
+                iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
+            else:
+                iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
+
+    def _eval_step(self, batch, b_idx, meters, losses, iterator):
+        self.to_device(batch, self.params.device)
+        if self.fp16:
+            with amp.autocast():
+                if isinstance(self.model, BaseEncoderModel):
+                    if self.model.input_dict:
+                        model_output = self.model(**batch.to_dict())
+                    else:
+                        model_output = self.model(batch)
+                    if isinstance(model_output, ClassifierOutput):
+                        loss = model_output.loss
+                        logits = model_output.predictions
+                    else:
+                        logits = model_output
+                        loss = None
+                else:
+                    if not isinstance(batch, dict):
+                        features = batch.to_dict()
+                        labels = batch.labels
+                    else:
+                        features = batch
+                        labels = batch["labels"]
+                    model_output = self.model(**features, labels=labels)
+                    loss = model_output[0]
+                    logits = model_output[1]
+        else:
+            if isinstance(self.model, BaseEncoderModel):
+                if self.model.input_dict:
+                    model_output = self.model(**batch.to_dict())
+                else:
+                    model_output = self.model(batch)
+                if isinstance(model_output, ClassifierOutput):
+                        loss = model_output.loss
+                        logits = model_output.predictions
+                else:
+                    logits = model_output
+                    loss = None
+            else:
+                if not isinstance(batch, dict):
+                    features = batch.to_dict()
+                    labels = batch.labels
+                else:
+                    features = batch
+                    labels = batch["labels"]
+                model_output = self.model(**features, labels=labels)
+                loss = model_output[0]
+                logits = model_output[1]
+        if loss is not None:
+            losses.update(loss.item(), self.params.batch_size)
+        if meters is not None:
+            if isinstance(batch, dict):
+                labels = batch["labels"].cpu().numpy()
+            else:
+                labels = batch.labels.cpu().numpy()
+            if logits is not None:
+                logits = logits.detach().cpu().numpy()
+                for m in meters.metrics:
+                    m.update(logits, labels, n=self.params.batch_size)
+            postfix_dict = meters.set_postfix()
+            if loss is not None:
+                postfix_dict["loss"] = losses.avg
+            iterator.set_postfix(**postfix_dict)  
       
     def train_fn(self, data_loader):
         if self.use_tpu:
@@ -202,43 +307,8 @@ class Learner:
         self.model.to(self.params.device)
         self.model.train()
         results = []
-        for b_idx, data in enumerate(iterator):
-            self.to_device(data, self.params.device)
-            skip_scheduler = False
-            if self.use_tpu:
-                loss, logits = self._tpu_step(data, b_idx)
-            elif self.fp16:
-                loss, logits, scale_before_step = self.mixed_precision_step(data, b_idx)
-                skip_scheduler = self.scaler.get_scale() != scale_before_step
-            else:
-               loss, logits = self.step(data, b_idx)
-
-            if (b_idx + 1) % self.accumulation_steps == 0:
-                self.optimizer.zero_grad()
-            
-            if self.scheduler is not None:
-                if not skip_scheduler:
-                    self.scheduler.step()
-            if self.replacing_rate_scheduler is not None:
-                self.replacing_rate_scheduler.step()
-        
-            losses.update(loss.item(), self.params.batch_size)
-            if meters is not None:
-                if isinstance(data, dict):
-                    labels = data["labels"].cpu().numpy()
-                else:
-                    labels = data.labels.cpu().numpy()
-                if logits is not None:
-                    logits = logits.detach().cpu().numpy()
-                    for m in meters.metrics:
-                        m.update(logits, labels, n=self.params.batch_size)
-                if not self.use_tpu:
-                    iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
-            if not self.use_tpu:
-                if meters is not None:
-                    iterator.set_postfix(loss=losses.avg, **meters.set_postfix())
-                else:
-                    iterator.set_postfix({"loss": "{:.2f}".format(losses.avg)})
+        for b_idx, batch in enumerate(iterator):
+            self._train_step(batch, b_idx, meters, losses, iterator)
         if not self.use_tpu:
             iterator.close()
         if self.verbose and meters is not None and not self.use_tpu:
@@ -256,72 +326,15 @@ class Learner:
             meters = Metrics(*self.metrics["validation"], mode="validation", return_predictions=return_predictions)
         else:
             meters = None
-        self.model.to(self.params.device)
+        if self.as_dask_worker:
+            self.model = delayed(self.model.cpu())
+        else:
+            self.model.to(self.params.device)
         self.model.eval()
         with torch.no_grad():
             iterator = tqdm(data_loader, total=len(data_loader))
-            for b_idx, data in enumerate(iterator):
-                self.to_device(data, self.params.device)
-                if self.fp16:
-                    with amp.autocast():
-                        if isinstance(self.model, BaseEncoderModel):
-                            if self.model.input_dict:
-                                model_output = self.model(**data.to_dict())
-                            else:
-                                model_output = self.model(data)
-                            if isinstance(model_output, ClassifierOutput):
-                                loss = model_output.loss
-                                logits = model_output.predictions
-                            else:
-                                logits = model_output
-                                loss = None
-                        else:
-                            if not isinstance(data, dict):
-                                features = data.to_dict()
-                                labels = data.labels
-                            else:
-                                features = data
-                                labels = data["labels"]
-                            model_output = self.model(**features, labels=labels)
-                            loss = model_output[0]
-                            logits = model_output[1]
-                else:
-                    if isinstance(self.model, BaseEncoderModel):
-                        if self.model.input_dict:
-                            model_output = self.model(**data.to_dict())
-                        else:
-                            model_output = self.model(data)
-                        if isinstance(model_output, ClassifierOutput):
-                                loss = model_output.loss
-                                logits = model_output.predictions
-                        else:
-                            logits = model_output
-                            loss = None
-                    else:
-                        if not isinstance(data, dict):
-                            features = data.to_dict()
-                            labels = data.labels
-                        else:
-                            features = data
-                            labels = data["labels"]
-                        model_output = self.model(**features, labels=labels)
-                        loss = model_output[0]
-                        logits = model_output[1]
-                if loss is not None:
-                    losses.update(loss.item(), self.params.batch_size)
-                if meters is not None:
-                    if isinstance(data, dict):
-                        labels = data["labels"].cpu().numpy()
-                    else:
-                        labels = data.labels.cpu().numpy()
-                    if logits is not None:
-                        logits = logits.detach().cpu().numpy()
-                        for m in meters.metrics:
-                            m.update(logits, labels, n=self.params.batch_size)
-                    postfix_dict = meters.set_postfix()
-                    if loss is not None:
-                        postfix_dict["loss"] = losses.avg
-                    iterator.set_postfix(**postfix_dict)
+            for b_idx, batch in enumerate(iterator):
+                self._eval_step(batch, b_idx, meters, losses, iterator)
             iterator.close()
         if self.verbose and meters is not None:
             meters.display_metrics()

@@ -1,13 +1,14 @@
-from src.pipeline.search_pipeline import APISearchPipeline, SemanticSearchPipeline, SentenceMiningPipeline
+from src.pipeline.search_pipeline import SemanticSearchPipeline
 from src.models.sentence_encoder import SentenceTransformerWrapper
 from src.configurations import config
-from src.modules.pooling import *
+from src.modules.modules import *
+from typing import List
 import random
 import argparse
 import torch
 import transformers
-from sentence_transformers import SentenceTransformer
 from src.utils.utils import load_file
+from distributed import Client
 
 def compare_models(queries: List[str], teacher_results: dict, student_results: dict):
     accuracy = 0
@@ -46,25 +47,27 @@ if __name__ == "__main__":
     parser.add_argument('--perc', type=float, dest="corpus_percentage", default=0.01)
     parser.add_argument('--nq', type=int, dest="num_queries", default=10)
     parser.add_argument('--topk', type=int, dest="topk", default=3)
+    parser.add_argument('--save_path', type=str, dest="save_path", default="./results")
+    parser.add_argument('--parallel', type=bool, dest="parallel", default=False)
     args = parser.parse_args()
 
     random.seed(43)
 
     model = "../training/trained_models/sencoder-distilbert-multi-quora/"
 
-    model_config = ModelParameters(
+    model_config = config.ModelParameters(
         model_name = "eval_sentence_mining",
         hidden_size=768
     )
 
-    configuration = Configuration(
+    configuration = config.Configuration(
         model_parameters=model_config,
-        model = model,
-        save_path = "./results",
+        model = args.student_model,
+        save_path = args.save_path,
         batch_size = 16,
-        device = torch.device("cuda"),
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model, use_fast=True),
-        model_path = "../compression/output/onnx/sencoder-distilbert-multi-quora-optim/model-opt.onnx"
+        device = torch.device(args.device),
+        tokenizer = transformers.AutoTokenizer.from_pretrained(args.student_model, use_fast=True)
+        #model_path = "../compression/output/onnx/sencoder-distilbert-multi-quora-optim/model-opt.onnx"
     )
     
 
@@ -78,18 +81,21 @@ if __name__ == "__main__":
     random.shuffle(all_sentences)
     corpus_portion = all_sentences[:int(len(all_sentences)*corpus_percent)]
 
-    pipeline = APISearchPipeline(
+    pipeline = SemanticSearchPipeline(
         name="semantic_search", 
         params=configuration,
         index_path="./index",
         corpus=corpus_portion, 
         model=encoder_model,
-        inference_mode=True,
         max_n_results=5)
+
+
+    if args.parallel:
+        client = Client()
 
     while True:
         query = str(input("Enter a sentence to search"))
-        results = pipeline(query, max_num_results=10)
+        results = pipeline(query, max_num_results=10, parallel=args.parallel)
         print(f"Results for query: {query}: ")
         for i, result in enumerate(results):
             print(f"result {i+1}: {result}")
